@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphdiff"
+version = "0.1.0"
+description = "Graph similarity, alignment, and structural diffing for large property graphs."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "Proprietary" }
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "pyarrow>=14",
+    "rustworkx>=0.14",
+    "python-igraph>=0.11",
+    "pydantic>=2.5",
+    "typer>=0.9",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+viewer = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=8", "ruff>=0.4", "mypy>=1.9"]
+
+[project.scripts]
+graphdiff = "graphdiff.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["graphdiff*"]
+
+[tool.setuptools.package-data]
+graphdiff = ["viewer/static/**/*", "data/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: performance smoke tests"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["graphdiff"]
+known-local-folder = ["helpers"]
