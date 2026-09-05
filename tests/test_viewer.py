@@ -228,3 +228,112 @@ class TestEncoding:
         assert labels["A_ONLY"] == "Only in v1"
         assert labels["B_ONLY"] == "Only in v2"
         assert labels["SHARED"] == "In both"
+
+
+class TestEgoNetworks:
+    """Cards come from the full union, so they never omit a real neighbour."""
+
+    def test_neighbors_and_statuses(self) -> None:
+        from graphdiff.viewer.ego import ego_networks
+
+        a = make_graph(
+            [("hub", "t", "kept", 1.0), ("hub", "t", "gone", 1.0), ("hub", "t", "same", 1.0)]
+        )
+        b = make_graph(
+            [("hub", "t", "kept", 9.0), ("hub", "t", "new", 1.0), ("hub", "t", "same", 1.0)]
+        )
+        (net,) = ego_networks(build_union_diff_graph(a, b), ["hub"])
+        by_label = {n.label: n.status for n in net.neighbors}
+        assert by_label == {
+            "kept": "CHANGED",  # same edge, different weight
+            "gone": "A_ONLY",
+            "new": "B_ONLY",
+            "same": "SHARED",
+        }
+        assert net.counts()["B_ONLY"] == 1
+
+    def test_uses_the_whole_union_not_the_drawn_subset(self) -> None:
+        from graphdiff.viewer.ego import ego_networks
+
+        a = random_graph(300, 800, seed=21)
+        b = random_graph(300, 800, seed=22)
+        union = build_union_diff_graph(a, b)
+        # Cap the drawing hard; the card must still see every neighbour.
+        select_focus(union, max_nodes=10)
+        label = str(union.nodes.index[0])
+        (net,) = ego_networks(union, [label], max_neighbors=10_000)
+        incident = union.edges[(union.edges["source"] == label) | (union.edges["target"] == label)]
+        expected = set(incident["source"]) | set(incident["target"])
+        expected.discard(label)
+        assert {n.label for n in net.neighbors} == expected
+
+    def test_differences_survive_the_neighbor_cap(self) -> None:
+        from graphdiff.viewer.ego import ego_networks
+
+        shared = [("hub", "t", f"s{i}", 1.0) for i in range(30)]
+        a = make_graph([*shared, ("hub", "t", "gone", 1.0)])
+        b = make_graph([*shared, ("hub", "t", "new", 1.0)])
+        (net,) = ego_networks(build_union_diff_graph(a, b), ["hub"], max_neighbors=4)
+        labels = {n.label for n in net.neighbors}
+        assert "gone" in labels and "new" in labels, "cap dropped a difference"
+        assert net.truncated > 0
+
+    def test_parallel_edges_show_the_difference_not_the_shared_one(self) -> None:
+        from graphdiff.viewer.ego import ego_networks
+
+        a = make_graph([("x", "knows", "y", 1.0), ("x", "owns", "y", 1.0)])
+        b = make_graph([("x", "knows", "y", 1.0)])
+        (net,) = ego_networks(build_union_diff_graph(a, b), ["x"])
+        assert [n.status for n in net.neighbors] == ["A_ONLY"]
+
+    def test_isolated_node_has_no_neighbors(self) -> None:
+        from graphdiff.viewer.ego import ego_networks
+
+        a = make_graph([("x", "t", "y", 1.0)], nodes=["x", "y", "lonely"])
+        (net,) = ego_networks(build_union_diff_graph(a, a), ["lonely"])
+        assert net.neighbors == []
+
+    def test_order_follows_the_request(self) -> None:
+        from graphdiff.viewer.ego import ego_networks
+
+        a, b = example_pair()
+        union = build_union_diff_graph(a, b)
+        wanted = [str(x) for x in union.nodes.index[:5]]
+        assert [n.label for n in ego_networks(union, wanted)] == wanted
+
+
+class TestViews:
+    def test_all_three_views_are_present(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        html = render_html(demo_report)
+        for view in ("overview", "cards", "compare"):
+            assert f'data-v="{view}"' in html
+        assert 'id="blend"' in html  # compare slider
+        assert 'id="cards"' in html
+
+    def test_cards_are_emitted_in_rank_order(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        import json
+
+        html = render_html(demo_report, max_cards=6)
+        payload = json.loads(
+            next(line for line in html.splitlines() if line.startswith("const D = "))[
+                len("const D = ") : -1
+            ].replace("<\\/", "</")
+        )
+        ranked = [row[0] for row in payload["topChanged"][:6]]
+        assert [e["l"] for e in payload["egos"]] == ranked
+
+    def test_card_count_is_capped(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        import json
+
+        html = render_html(demo_report, max_cards=3)
+        payload = json.loads(
+            next(line for line in html.splitlines() if line.startswith("const D = "))[
+                len("const D = ") : -1
+            ].replace("<\\/", "</")
+        )
+        assert len(payload["egos"]) == 3
+
+    def test_bare_union_has_no_cards(self) -> None:
+        a, b = example_pair()
+        html = render_html(build_union_diff_graph(a, b))
+        assert '"egos":[]' in html

@@ -11,6 +11,7 @@ greyscale printing and colour-vision deficiency. See :mod:`graphdiff.viewer.them
 
 from __future__ import annotations
 
+from .ego import EgoNeighbor, EgoNetwork, ego_networks
 from .focus import FocusSelection, select_focus
 from .html import render_html, write_html
 from .layout import LayoutParams, force_directed_layout
@@ -21,8 +22,11 @@ __all__ = [
     "LIGHT",
     "SHAPES",
     "STATUS_COLORS",
+    "EgoNeighbor",
+    "EgoNetwork",
     "FocusSelection",
     "LayoutParams",
+    "ego_networks",
     "force_directed_layout",
     "render_html",
     "select_focus",

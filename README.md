@@ -169,6 +169,29 @@ relationships. **Differences only** hides the shared scaffolding. Search by
 label, toggle any status, click a row of the most-changed table to fly to that
 node, `Esc` to clear. The theme follows your OS and has a manual toggle.
 
+### Three views
+
+The page opens on **Overview** — the whole union graph — but that view answers
+"how much changed", not "where". Two more views answer *where*:
+
+**Changes** is the one to use first. One small card per most-changed node, in the
+same rank order as the analysis, each showing that node's neighbourhood.
+Neighbours sit in fixed angular sectors — *removed left, added right, reweighted
+below, unchanged above* — so the same kind of change lands in the same place on
+every card, and a wall of cards is scannable instead of forty separate puzzles.
+Cards are built from the whole union, never the drawn subset, so one is never
+missing a neighbour the overview happened to cap away.
+
+**Compare** draws both graphs on *identical coordinates*. Nothing moves between
+them, so anything that appears or vanishes is unmissable. A slider crossfades A
+into B; **Flicker** alternates them automatically, which turns the diff into
+motion — a far stronger perceptual channel than colour. **Split** puts them side
+by side with linked pan and zoom.
+
+```python
+write_html(report, "diff.html", max_cards=60, max_card_neighbors=30)
+```
+
 At scale the page draws a **focus subgraph** rather than everything: all
 differing elements, plus a ring of unchanged context (`context_hops`), capped at
 `max_nodes` with differences kept ahead of context. The header always states
