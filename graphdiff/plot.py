@@ -65,7 +65,9 @@ def _mpl() -> Any:
         import matplotlib
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise ImportError("graphdiff.plot needs matplotlib: pip install 'graphdiff[plot]'") from exc
-    matplotlib.use("Agg", force=False)
+    # No matplotlib.use(): headless sessions fall back to Agg on their own, and
+    # forcing it here would switch a notebook away from its inline backend.
+    del matplotlib
     import matplotlib.pyplot as plt
 
     return plt

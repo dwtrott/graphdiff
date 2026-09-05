@@ -57,6 +57,7 @@ class TestSerialization:
             "graph_edit_distance",
             "weight_agreement",
             "neighborhood_delta",
+            "structural",
         }
         assert payload["scalar_scores"]["jaccard_nodes"]["raw"] == pytest.approx(0.6)
 

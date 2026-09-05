@@ -165,3 +165,20 @@ def test_version_flag() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
     assert "graphdiff 0.1.0" in result.output
+
+
+class TestPackagingScripts:
+    """The offline-bundle scripts must at least parse; building needs network."""
+
+    @pytest.mark.parametrize("name", ["build_offline_bundle.sh", "install_offline.sh"])
+    def test_scripts_parse(self, name: str) -> None:
+        import subprocess
+
+        path = Path(__file__).resolve().parents[1] / "scripts" / name
+        assert path.exists()
+        subprocess.run(["bash", "-n", str(path)], check=True)
+
+    def test_dockerfile_installs_from_bundle_only(self) -> None:
+        text = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+        assert "--no-index" in text and "--find-links wheelhouse" in text
+        assert "pip install graphdiff" not in text  # never from the index

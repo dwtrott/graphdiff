@@ -33,13 +33,20 @@ pip install -e .            # development
 pip install -e ".[plot]"    # + matplotlib helpers
 ```
 
-Offline install from a prebuilt bundle:
+Offline install from a prebuilt bundle — build it on a connected machine,
+carry the tarball across the air gap, install with no network at all:
 
 ```bash
-pip install --no-index --find-links wheelhouse graphdiff
+scripts/build_offline_bundle.sh [--python 3.11] [--platform manylinux2014_x86_64] [--extras plot,viewer]
+#   → dist/graphdiff-offline-<version>.tar.gz  (every wheel, pinned requirements, checksums, README, demo notebook)
+
+tar -xzf graphdiff-offline-<version>.tar.gz && cd graphdiff-offline-<version>
+./install_offline.sh [python3]         # verifies SHA-256s, pip --no-index, runs an offline smoke test
 ```
 
 Every dependency ships a manylinux wheel; nothing compiles at install time.
+The `Dockerfile` builds a runtime image from the same bundle (only the base
+image is pulled): `docker build --build-arg BUNDLE=dist/graphdiff-offline-0.1.0.tar.gz -t graphdiff .`
 
 ## Library
 
@@ -91,6 +98,7 @@ different scales.
 | Per-node neighborhood delta | how much of each node's neighbourhood turned over? |
 | **Per-node significance** (binomial surprise) | **which changes actually matter?** |
 | Cluster change density | *where* is the change — concentrated or diffuse? |
+| Label-free structural: degree-distribution JS, spectral, NetSimile, Weisfeiler-Lehman | are these the same *kind* of graph, labels aside? |
 
 Set-theoretic scores are reported **separately** per element kind and never
 blended into one number by default: a pair can share every node while sharing no
@@ -105,6 +113,26 @@ from graphdiff import GEDCosts
 costs = GEDCosts(edge_type_costs={"owns": 10.0, "mentions": 0.5})
 report = gd.compare(a, b, ged_costs=costs)
 ```
+
+### Label-free structural similarity
+
+Four signatures that never read a label, for graphs whose names cannot be
+trusted at all (anonymized exports, synthetic versus real, two systems that
+name things differently) and as a sanity check beside the aligned scores: a
+pair that is 95% similar by edit distance but far apart spectrally has been
+reorganized under stable names.
+
+| Metric | What it compares |
+| --- | --- |
+| `degree_js_similarity` | degree distributions (in / out / total) on log-spaced bins, by Jensen-Shannon divergence |
+| `spectral_similarity` | the top-*k* eigenvalues of the normalized adjacency — community structure and connectivity at every scale |
+| `netsimile_similarity` | seven local features per node (degree, clustering, neighbour degree, ego-net edges and boundary, two-hop reach, neighbour clustering) summarized by five moments, by Canberra distance |
+| `wl_similarity` | Weisfeiler-Lehman subtree labels from log-binned degree, cosine per depth, averaged — the most sensitive to local wiring |
+
+All are in `[0, 1]`, reported raw and on the shared subgraph like everything
+else, and size-independent by design: two graphs of very different node counts
+score 1.0 if they have the same shape. `compare(..., structural=False)` skips
+them; the spectral and WL passes are skipped automatically above 250k nodes.
 
 ### Significance: which changes matter
 
@@ -214,6 +242,13 @@ gd.write_graph(graph, "out.parquet")
 
 GraphML is parsed directly (streaming `iterparse`, no networkx). Edge-list
 headers accept the common aliases (`src`/`dst`, `from`/`to`, `relation`).
+
+## Notebook
+
+`examples/graphdiff_demo.ipynb` walks through all of it — findings,
+significance, regions, scores, the viewer, fuzzy alignment, a timeline, the
+regression gate and provenance — on generated data, fully offline. It ships in
+the offline bundle.
 
 ## Example data
 
@@ -326,7 +361,7 @@ anything is clicked. Its show-mode switch narrows from *everything* to
 *changes only* to *significant only*; every finding is a link that switches to
 the right view and selects the node or cluster it talks about.
 
-**Regions** is the one that scales. The union is partitioned (Louvain by
+**Regions** is the one that scales. The union is partitioned (Leiden by
 default, or by any node attribute you name), and each partition is drawn as one
 mark sized by membership and shaded by **change density** — the share of its own
 nodes and internal edges that differ. A million nodes becomes twenty blobs, the
@@ -410,9 +445,16 @@ mypy graphdiff
 ### Performance
 
 `compare()` on two ~500k-edge graphs sharing 200k node labels runs in about
-**11 s** on a development machine. `tests/test_performance.py` guards this with
+**45 s** on a development machine with everything on (the four structural
+signatures and the cluster pass are about two thirds of that; `structural=False,
+findings=False` brings it to ~14 s). `tests/test_performance.py` guards this with
 a deliberately loose 90 s budget — it exists to catch an accidental quadratic or
 a per-row Python loop, not to benchmark.
+
+Community detection is Leiden, not Louvain: igraph's `community_multilevel`
+crawls on large graphs with little community structure (four minutes on a
+200k-node random graph where Leiden takes four seconds) and the partitions are
+equivalent for this purpose.
 
 The hot paths deliberately avoid two pandas traps at this scale: `Series.isin`
 on Arrow-backed string columns (which falls back to a Python listcomp — see

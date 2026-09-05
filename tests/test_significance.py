@@ -147,7 +147,7 @@ class TestFindings:
         assert len(payload["findings"]) == len(report.findings)
         assert payload["findings"][0]["kind"] == "headline"
         assert payload["significance"]["rates"]["removal"] > 0
-        assert payload["clusters"]["method"] == "louvain"
+        assert payload["clusters"]["method"] == "leiden"
 
     def test_findings_can_be_disabled(self) -> None:
         a, b = example_pair()

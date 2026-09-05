@@ -8,7 +8,7 @@ blobs rather than a needle-in-haystack search, and drilling into one is a
 bounded problem the overview can already handle.
 
 Community detection is delegated to :mod:`igraph` (already a core dependency,
-and C-implemented, so Louvain on 10^6 edges is seconds rather than minutes).
+and C-implemented, so Leiden on 10^6 edges is seconds rather than minutes).
 A caller who already knows the right partition — an entity type, an owning
 organization, a source system — can supply it instead and skip the detection.
 """
@@ -110,7 +110,7 @@ def membership_from_attribute(union: UnionDiffGraph, attribute: str) -> pd.Serie
 
 
 def _detect_communities(union: UnionDiffGraph, resolution: float) -> pd.Series:
-    """Louvain communities over the undirected union structure."""
+    """Leiden (modularity) communities over the undirected union structure."""
     import igraph as ig
 
     labels = union.nodes.index
@@ -125,7 +125,13 @@ def _detect_communities(union: UnionDiffGraph, resolution: float) -> pd.Series:
 
     graph = ig.Graph(n=len(labels), edges=pairs, directed=False)
     graph.simplify(multiple=True, loops=True)
-    communities = graph.community_multilevel(resolution=resolution)
+    # Leiden with the modularity objective: same partition quality as Louvain
+    # (community_multilevel) and dramatically faster on large graphs with
+    # little community structure, where Louvain's first level crawls (255 s
+    # vs 4 s on a 200k-node, 1M-edge random graph).
+    communities = graph.community_leiden(
+        objective_function="modularity", resolution=resolution, n_iterations=3
+    )
     return pd.Series([str(m) for m in communities.membership], index=labels)
 
 
@@ -148,7 +154,7 @@ def cluster_union(
     attribute:
         Partition by this node attribute instead of detecting communities.
     resolution:
-        Louvain resolution; higher splits into more, smaller communities.
+        Modularity resolution; higher splits into more, smaller communities.
     max_clusters:
         Keep the largest ``max_clusters`` partitions and fold the remainder into
         a single ``"(other)"`` cluster, so the view stays readable.
@@ -167,7 +173,7 @@ def cluster_union(
         method = f"attribute:{attribute}"
     else:
         assign = _detect_communities(union, resolution)
-        method = "louvain"
+        method = "leiden"
 
     # Fold the long tail so the picture stays a handful of marks.
     sizes = assign.value_counts()

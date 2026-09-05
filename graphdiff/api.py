@@ -18,6 +18,7 @@ from .metrics.ged import GEDCosts, graph_edit_distance
 from .metrics.neighborhood import Direction, neighborhood_delta
 from .metrics.settheoretic import set_theoretic
 from .metrics.significance import node_significance
+from .metrics.structural import structural_similarity
 from .metrics.weights import weight_agreement
 from .report.findings import generate_findings
 from .report.report import ComparisonReport
@@ -103,6 +104,7 @@ def compare(
     align: AlignMethod = "exact",
     align_threshold: float = 0.6,
     align_options: dict[str, Any] | None = None,
+    structural: bool = True,
 ) -> ComparisonReport:
     """Compare two graphs and return a full :class:`ComparisonReport`.
 
@@ -146,6 +148,10 @@ def compare(
     align_options:
         Extra keyword arguments for :func:`~graphdiff.core.align.align_graphs`
         (``label_weight``, ``max_candidates``, ``rounds``, ...).
+    structural:
+        Also compute the label-free structural similarities (degree
+        distribution, spectral, NetSimile, Weisfeiler-Lehman); see
+        :mod:`graphdiff.metrics.structural`. Set ``False`` in tight loops.
 
     Returns
     -------
@@ -182,6 +188,7 @@ def compare(
             "direction": direction,
             "cluster_by": cluster_by,
             "align": align,
+            "structural": structural,
             "align_threshold": align_threshold if align != "exact" else None,
             "ged_costs": to_jsonable(ged_costs) if ged_costs is not None else "unit",
             "attribute_comparison": to_jsonable(comparison) if comparison is not None else "all",
@@ -199,6 +206,7 @@ def compare(
         cluster_by=cluster_by,
         findings=findings,
         provenance=provenance,
+        structural=structural,
     )
 
 
@@ -214,9 +222,18 @@ def report_from_union(
     cluster_by: str | None = None,
     findings: bool = True,
     provenance: dict[str, Any] | None = None,
+    structural: bool = True,
 ) -> ComparisonReport:
     """Run the metric suite over an already-built union diff graph."""
     shared = union.induced_shared()
+    structural_scores = (
+        DualScore(
+            raw=structural_similarity(union.graph_a, union.graph_b),
+            shared=structural_similarity(shared.graph_a, shared.graph_b),
+        )
+        if structural
+        else None
+    )
     neighborhood = neighborhood_delta(union, direction=direction, top_n=top_n)
 
     significance = node_significance(
@@ -255,6 +272,7 @@ def report_from_union(
             raw=weights_raw, shared=weight_agreement(shared, weight_attribute)
         ),
         neighborhood=neighborhood,
+        structural=structural_scores,
         significance=significance,
         clusters=clusters,
         findings=found,

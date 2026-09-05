@@ -24,6 +24,7 @@ from ..metrics.ged import GEDResult
 from ..metrics.neighborhood import NeighborhoodDeltaResult
 from ..metrics.settheoretic import SetTheoreticResult
 from ..metrics.significance import SignificanceResult
+from ..metrics.structural import StructuralResult
 from ..metrics.weights import WeightAgreementResult
 from .findings import Finding
 
@@ -49,6 +50,10 @@ SCALAR_METRICS: tuple[str, ...] = (
     "weight_mean_abs_diff",
     "neighborhood_mean_jaccard",
     "neighborhood_median_jaccard",
+    "degree_js_similarity",
+    "spectral_similarity",
+    "netsimile_similarity",
+    "wl_similarity",
 )
 
 
@@ -71,6 +76,17 @@ def _ged_scalars(result: GEDResult) -> dict[str, float]:
         "ged_cost": result.cost,
         "ged_normalized_distance": result.normalized_distance,
         "ged_similarity": result.similarity,
+    }
+
+
+def _structural_scalars(result: StructuralResult | None) -> dict[str, float | None]:
+    if result is None:
+        return {}
+    return {
+        "degree_js_similarity": result.degree_js_similarity,
+        "spectral_similarity": result.spectral_similarity,
+        "netsimile_similarity": result.netsimile_similarity,
+        "wl_similarity": result.wl_similarity,
     }
 
 
@@ -121,6 +137,7 @@ class ComparisonReport:
     ged: DualScore[GEDResult]
     weight_agreement: DualScore[WeightAgreementResult]
     neighborhood: NeighborhoodDeltaResult
+    structural: DualScore[StructuralResult] | None = None
     significance: SignificanceResult | None = field(default=None, repr=False)
     clusters: ClusterMap | None = field(default=None, repr=False, compare=False)
     findings: list[Finding] = field(default_factory=list, repr=False)
@@ -141,11 +158,13 @@ class ComparisonReport:
             **_weight_scalars(self.weight_agreement.raw),
             "neighborhood_mean_jaccard": self.neighborhood.mean_jaccard,
             "neighborhood_median_jaccard": self.neighborhood.median_jaccard,
+            **_structural_scalars(self.structural.raw if self.structural else None),
         }
         shared: dict[str, float | None] = {
             **_set_scalars(self.set_theoretic.shared),
             **_ged_scalars(self.ged.shared),
             **_weight_scalars(self.weight_agreement.shared),
+            **_structural_scalars(self.structural.shared if self.structural else None),
             "neighborhood_mean_jaccard": self.neighborhood.mean_jaccard,
             "neighborhood_median_jaccard": self.neighborhood.median_jaccard,
         }
@@ -197,6 +216,7 @@ class ComparisonReport:
                 "set_theoretic": self.set_theoretic.to_dict(),
                 "graph_edit_distance": self.ged.to_dict(),
                 "weight_agreement": self.weight_agreement.to_dict(),
+                "structural": self.structural.to_dict() if self.structural else None,
                 "neighborhood_delta": {
                     "mean_jaccard": to_jsonable(self.neighborhood.mean_jaccard),
                     "median_jaccard": to_jsonable(self.neighborhood.median_jaccard),
