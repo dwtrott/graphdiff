@@ -3,5 +3,6 @@
 from __future__ import annotations
 
 from .matrix import all_pairs, discover_graphs
+from .timeline import TimelineReport, compare_sequence
 
-__all__ = ["all_pairs", "discover_graphs"]
+__all__ = ["TimelineReport", "all_pairs", "compare_sequence", "discover_graphs"]

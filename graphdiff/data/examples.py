@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .._types import ETYPE, LABEL, SOURCE, TARGET
 from ..core.graph import PropertyGraph
 
 __all__ = ["ORGS", "PEOPLE", "TOPICS", "example_pair", "large_example_pair"]
@@ -297,3 +298,140 @@ def large_example_pair(
     frame_b = frame_b.drop_duplicates(subset=["source", "type", "target"], ignore_index=True)
     graph_b = PropertyGraph.from_edges(frame_b, name="rebuilt")
     return graph_a, graph_b
+
+
+def perturb_labels(
+    graph: PropertyGraph,
+    *,
+    fraction: float = 0.1,
+    seed: int = 0,
+    name: str | None = None,
+) -> tuple[PropertyGraph, dict[str, str]]:
+    """Return a copy of ``graph`` with a share of node labels rewritten.
+
+    The rewrites are the kinds that real data drifts by — upper-casing, a
+    suffix like ``" Inc."``, a swapped separator, a one-character typo — so
+    the copy is the same graph wearing different names. It exists to
+    exercise and demonstrate fuzzy alignment; the returned mapping is
+    ``{new_label: old_label}`` for scoring a matcher against the truth.
+    """
+    rng = np.random.default_rng(seed)
+    labels = list(graph.nodes.index)
+    n = round(fraction * len(labels))
+    chosen = rng.choice(len(labels), size=min(n, len(labels)), replace=False)
+    rename: dict[str, str] = {}
+    for idx in chosen:
+        old = str(labels[idx])
+        kind = rng.integers(4)
+        if kind == 0:
+            new = old.upper()
+        elif kind == 1:
+            new = f"{old} Inc."
+        elif kind == 2:
+            new = old.replace("-", "_").replace(" ", "-")
+        else:
+            pos = int(rng.integers(max(1, len(old) - 1)))
+            new = old[:pos] + "x" + old[pos + 1 :]
+        if new == old or new in rename or new in graph.nodes.index:
+            new = f"{old}~"
+        rename[new] = old
+    inverse = {old: new for new, old in rename.items()}
+    nodes = graph.nodes.copy()
+    nodes.index = pd.Index([inverse.get(str(x), x) for x in nodes.index], name=LABEL)
+    edges = graph.edges.copy()
+    edges[SOURCE] = edges[SOURCE].map(lambda x: inverse.get(str(x), x))
+    edges[TARGET] = edges[TARGET].map(lambda x: inverse.get(str(x), x))
+    return (
+        PropertyGraph(
+            nodes=nodes, edges=edges, directed=graph.directed, name=name or f"{graph.name}-renamed"
+        ),
+        rename,
+    )
+
+
+def example_sequence(
+    *,
+    n_snapshots: int = 6,
+    n_communities: int = 12,
+    community_size: int = 60,
+    seed: int = 7,
+    event_step: int = 3,
+) -> list[PropertyGraph]:
+    """A series of snapshots with steady drift, one event, and a hotspot.
+
+    Every step: ~1% of edges churn everywhere (background drift) and one
+    "hotspot" community keeps rewiring (a recurrent change). At ``event_step``
+    a whole community is torn down and a new one arrives (the event). A few
+    nodes leave and return (flicker). This is the shape a timeline should be
+    able to narrate: *when* it happened, *where* it keeps happening, and what
+    was noise.
+    """
+    rng = np.random.default_rng(seed)
+    types = ("links_to", "cites", "mentions")
+    w = lambda lo, hi: round(float(rng.uniform(lo, hi)), 3)  # noqa: E731
+
+    members = [[f"c{c:02d}-n{i:03d}" for i in range(community_size)] for c in range(n_communities)]
+    edges: dict[tuple[str, str, str], float] = {}
+    for block in members:
+        for a in block:
+            for _ in range(3):
+                b = block[int(rng.integers(0, community_size))]
+                if a != b:
+                    edges[(a, str(rng.choice(types)), b)] = w(0.2, 1.0)
+    flat = [n for block in members for n in block]
+    for _ in range(n_communities * 20):
+        a, b = rng.choice(flat, size=2, replace=False)
+        edges[(str(a), "links_to", str(b))] = w(0.05, 0.4)
+
+    hotspot = members[1]
+    flicker = list(rng.choice(members[2], size=4, replace=False))
+    snapshots: list[PropertyGraph] = []
+
+    def snapshot(name: str, current: dict[tuple[str, str, str], float]) -> PropertyGraph:
+        frame = pd.DataFrame(
+            [(s, t, d, wt) for (s, t, d), wt in current.items()],
+            columns=[SOURCE, ETYPE, TARGET, "weight"],
+        )
+        return PropertyGraph.from_edges(frame, name=name)
+
+    snapshots.append(snapshot("t0", edges))
+    for step in range(1, n_snapshots):
+        keys = list(edges)
+        # Background drift.
+        for k in rng.choice(len(keys), size=max(1, len(keys) // 100), replace=False):
+            edges.pop(keys[int(k)], None)
+        for _ in range(max(1, len(keys) // 100)):
+            a, b = rng.choice(flat, size=2, replace=False)
+            edges[(str(a), str(rng.choice(types)), str(b))] = w(0.05, 0.6)
+        # Hotspot: keeps rewiring.
+        hot_keys = [k for k in edges if k[0] in hotspot and k[2] in hotspot]
+        for k in rng.choice(len(hot_keys), size=len(hot_keys) // 5, replace=False):
+            edges.pop(hot_keys[int(k)], None)
+        for _ in range(len(hot_keys) // 5):
+            a, b = rng.choice(hotspot, size=2, replace=False)
+            edges[(str(a), str(rng.choice(types)), str(b))] = w(0.2, 1.0)
+        # Flicker: a few nodes vanish on odd steps and return on even ones.
+        if step % 2 == 1:
+            edges = {k: v for k, v in edges.items() if k[0] not in flicker and k[2] not in flicker}
+        else:
+            for a in flicker:
+                for _ in range(3):
+                    b = str(rng.choice(members[2]))
+                    if a != b:
+                        edges[(a, str(rng.choice(types)), b)] = w(0.2, 1.0)
+        # The event.
+        if step == event_step:
+            gone = set(members[-1])
+            edges = {k: v for k, v in edges.items() if k[0] not in gone and k[2] not in gone}
+            fresh = [f"new-n{i:03d}" for i in range(community_size)]
+            for a in fresh:
+                for _ in range(3):
+                    b = fresh[int(rng.integers(0, community_size))]
+                    if a != b:
+                        edges[(a, str(rng.choice(types)), b)] = w(0.2, 1.0)
+            for _ in range(20):
+                a, b = str(rng.choice(fresh)), str(rng.choice(flat[: community_size * 3]))
+                edges[(a, "links_to", b)] = w(0.05, 0.4)
+            flat = [n for n in flat if n not in gone] + fresh
+        snapshots.append(snapshot(f"t{step}", edges))
+    return snapshots

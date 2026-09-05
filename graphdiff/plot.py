@@ -19,6 +19,8 @@ The figures:
   :func:`~graphdiff.batch.all_pairs` table.
 * :func:`plot_dashboard` — overview, clusters, top-changed and the findings in
   one page.
+* :func:`plot_timeline` — churn and similarity per step over a node x step
+  significance heatmap, for a :func:`~graphdiff.batch.compare_sequence` result.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ __all__ = [
     "plot_degree_distributions",
     "plot_overview",
     "plot_similarity_matrix",
+    "plot_timeline",
     "plot_top_changed",
     "save",
 ]
@@ -530,3 +533,88 @@ def save(fig: Figure, path: str | Path, *, dpi: int = 160) -> Path:
     fig.savefig(path, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
     return path
+
+
+# --------------------------------------------------------------------------- timeline
+
+
+def plot_timeline(
+    timeline: Any, *, max_nodes: int = 30, figsize: tuple[float, float] = (12, 8)
+) -> Figure:
+    """Churn per step with similarity, above a node x step significance heatmap.
+
+    ``timeline`` is a :class:`~graphdiff.batch.timeline.TimelineReport`.
+    """
+    plt = _mpl()
+    from matplotlib.colors import LinearSegmentedColormap
+
+    churn = timeline.churn()
+    n = len(churn)
+    hist = timeline.node_history.head(max_nodes)
+    fig = plt.figure(figsize=figsize, facecolor=LIGHT["surface"])
+    grid = fig.add_gridspec(2, 1, height_ratios=[1, max(1.2, 0.09 * len(hist))], hspace=0.35)
+
+    ax = fig.add_subplot(grid[0])
+    ax.set_facecolor(LIGHT["surface"])
+    x = np.arange(n)
+    ax.bar(x, churn["edges_removed"], 0.6, color=LIGHT["A_ONLY"], label="edges removed")
+    ax.bar(
+        x,
+        churn["edges_added"],
+        0.6,
+        bottom=churn["edges_removed"],
+        color=LIGHT["B_ONLY"],
+        label="edges added",
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(timeline.step_labels(), fontsize=8, rotation=20, ha="right")
+    ax.set_ylabel("edges changed", fontsize=8, color=LIGHT["inkSecondary"])
+    peak = float((churn["edges_removed"] + churn["edges_added"]).max() or 1)
+    ax.set_ylim(0, peak * 1.45)  # headroom for the legend and the similarity labels
+    ax2 = ax.twinx()
+    sims = churn["similarity"].astype(float)
+    ax2.plot(x, sims, color=LIGHT["ink"], marker="o", ms=4, lw=1.4, label="similarity")
+    for xi, s in zip(x, sims, strict=True):
+        if not np.isnan(s):
+            ax2.annotate(
+                f"{s:.2f}",
+                (xi, s),
+                xytext=(0, 6),
+                textcoords="offset points",
+                ha="center",
+                fontsize=7.5,
+            )
+    ax2.set_ylim(0, 1.08)
+    ax2.set_ylabel("similarity", fontsize=8, color=LIGHT["inkSecondary"])
+    for a in (ax, ax2):
+        for spine in ("top",):
+            a.spines[spine].set_visible(False)
+        a.tick_params(colors=LIGHT["inkSecondary"], labelsize=8)
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, fontsize=7.5, frameon=False, loc="upper left", ncol=3)
+    ax.set_title("Churn per step", fontsize=11, loc="left", color=LIGHT["ink"])
+
+    axh = fig.add_subplot(grid[1])
+    if len(hist):
+        cmap = LinearSegmentedColormap.from_list("gd_violet", ["#ffffff", *CHANGE_RAMP["light"]])
+        im = axh.imshow(hist.to_numpy(), aspect="auto", cmap=cmap, vmin=0)
+        axh.set_yticks(range(len(hist)))
+        axh.set_yticklabels([str(i) for i in hist.index], fontsize=7.5)
+        axh.set_xticks(range(n))
+        axh.set_xticklabels([str(k + 1) for k in range(n)], fontsize=8)
+        axh.set_xlabel("step", fontsize=8, color=LIGHT["inkSecondary"])
+        fig.colorbar(im, ax=axh, fraction=0.03, pad=0.01).set_label("significance", fontsize=8)
+        for spine in axh.spines.values():
+            spine.set_visible(False)
+        axh.tick_params(colors=LIGHT["inkSecondary"], length=0)
+    else:
+        _style(axh)
+        axh.text(0.5, 0.5, "no notable nodes", ha="center", va="center")
+    axh.set_title(
+        f"Where and when: the {len(hist)} most significant nodes across the series",
+        fontsize=11,
+        loc="left",
+        color=LIGHT["ink"],
+    )
+    return fig

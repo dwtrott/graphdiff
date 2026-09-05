@@ -18,10 +18,12 @@ from __future__ import annotations
 from ._types import Status
 from .api import compare, compare_files, inspect_graph, report_from_union
 from .core import (
+    AlignmentResult,
     AttributeComparison,
     DuplicateEdgeError,
     PropertyGraph,
     UnionDiffGraph,
+    align_graphs,
     build_union_diff_graph,
 )
 from .io import detect_format, read_graph, write_graph
@@ -38,6 +40,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "SCALAR_METRICS",
+    "AlignmentResult",
     "AttributeComparison",
     "ComparisonReport",
     "DuplicateEdgeError",
@@ -46,6 +49,7 @@ __all__ = [
     "Status",
     "UnionDiffGraph",
     "__version__",
+    "align_graphs",
     "build_union_diff_graph",
     "compare",
     "compare_files",

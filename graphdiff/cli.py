@@ -6,6 +6,8 @@
     graphdiff inspect A.graphml
     graphdiff matrix ./graphs/ --metric jaccard_edges --out scores.parquet --workers 8
     graphdiff render A.graphml B.graphml --out diff.html
+    graphdiff timeline t0.graphml t1.graphml t2.graphml --html timeline.html
+    graphdiff check A.graphml B.graphml -r "jaccard_typed_edges>=0.95"
     graphdiff serve diff.html --port 8080
 
 Every command is offline: ``serve`` binds a stdlib HTTP server to localhost and
@@ -19,7 +21,7 @@ import json
 import sys
 import webbrowser
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -27,6 +29,18 @@ from . import __version__
 from .api import compare as _compare
 from .api import inspect_graph
 from .report.report import SCALAR_METRICS
+
+_ALIGN_HELP = "Node matching: exact | normalized | fuzzy (see align_graphs)."
+AlignOpt = Annotated[str, typer.Option("--align", help=_ALIGN_HELP)]
+ThresholdOpt = Annotated[float, typer.Option("--align-threshold", help="Min fuzzy match score.")]
+
+
+def _align_kwargs(align: str, threshold: float) -> dict[str, Any]:
+    if align not in ("exact", "normalized", "fuzzy"):
+        typer.echo(f"--align must be exact, normalized or fuzzy (got {align!r})", err=True)
+        raise typer.Exit(code=2)
+    return {"align": align, "align_threshold": threshold}
+
 
 app = typer.Typer(
     name="graphdiff",
@@ -67,13 +81,17 @@ def compare(
     ] = False,
     weight: Annotated[str, typer.Option(help="Edge attribute for weight agreement.")] = "weight",
     top: Annotated[int, typer.Option(help="Rows in the most-changed-nodes table.")] = 25,
+    align: AlignOpt = "exact",
+    align_threshold: ThresholdOpt = 0.6,
 ) -> None:
     """Compare two graphs and write a report."""
     from .io import read_graph
 
     a = read_graph(graph_a, directed=not undirected)
     b = read_graph(graph_b, directed=not undirected)
-    report = _compare(a, b, weight_attribute=weight, top_n=top)
+    report = _compare(
+        a, b, weight_attribute=weight, top_n=top, **_align_kwargs(align, align_threshold)
+    )
 
     if out is not None:
         report.to_json(out)
@@ -192,6 +210,8 @@ def check(
     as_json: Annotated[bool, typer.Option("--json", help="Emit the verdict as JSON.")] = False,
     undirected: Annotated[bool, typer.Option()] = False,
     weight: Annotated[str, typer.Option(help="Edge attribute for weight agreement.")] = "weight",
+    align: AlignOpt = "exact",
+    align_threshold: ThresholdOpt = 0.6,
 ) -> None:
     """Regression gate: exit 1 when any rule fails, 0 when all pass.
 
@@ -222,7 +242,7 @@ def check(
 
     a = read_graph(graph_a, directed=not undirected)
     b = read_graph(graph_b, directed=not undirected)
-    report = _compare(a, b, weight_attribute=weight)
+    report = _compare(a, b, weight_attribute=weight, **_align_kwargs(align, align_threshold))
     if out is not None:
         report.to_json(out)
     try:
@@ -257,6 +277,8 @@ def plot(
     top: Annotated[int, typer.Option(help="Bars in the top-changed chart.")] = 20,
     cluster_by: Annotated[str | None, typer.Option(help="Node attribute to cluster by.")] = None,
     undirected: Annotated[bool, typer.Option()] = False,
+    align: AlignOpt = "exact",
+    align_threshold: ThresholdOpt = 0.6,
 ) -> None:
     """Static figure of the diff (needs the [plot] extra: matplotlib)."""
     from .io import read_graph
@@ -269,7 +291,7 @@ def plot(
 
     a = read_graph(graph_a, directed=not undirected)
     b = read_graph(graph_b, directed=not undirected)
-    report = _compare(a, b, cluster_by=cluster_by)
+    report = _compare(a, b, cluster_by=cluster_by, **_align_kwargs(align, align_threshold))
     kinds = {
         "overview": lambda: _plot.plot_overview(report, max_nodes=max_nodes),
         "clusters": lambda: _plot.plot_clusters(report, max_nodes=max_nodes),
@@ -286,6 +308,53 @@ def plot(
 
 
 @app.command()
+def timeline(
+    graphs: Annotated[list[Path], typer.Argument(exists=True, help="Snapshots, in order.")],
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="Timeline JSON path.")] = None,
+    markdown: Annotated[Path | None, typer.Option(help="Also write a markdown summary.")] = None,
+    html: Annotated[Path | None, typer.Option(help="Also write the timeline page.")] = None,
+    figure: Annotated[
+        Path | None, typer.Option(help="Also write a PNG/SVG (needs [plot]).")
+    ] = None,
+    max_nodes: Annotated[int, typer.Option(help="Cap on drawn nodes per step page.")] = 2000,
+    undirected: Annotated[bool, typer.Option()] = False,
+    align: AlignOpt = "exact",
+    align_threshold: ThresholdOpt = 0.6,
+) -> None:
+    """Compare a sequence of snapshots: when it changed, where it keeps changing."""
+    from .batch.timeline import compare_sequence
+    from .io import read_graph
+
+    if len(graphs) < 2:
+        typer.echo("timeline needs at least two graphs", err=True)
+        raise typer.Exit(code=2)
+    loaded = [read_graph(p, directed=not undirected) for p in graphs]
+    names = [p.stem for p in graphs]
+    tl = compare_sequence(loaded, names=names, **_align_kwargs(align, align_threshold))
+    if out is not None:
+        tl.to_json(out)
+        typer.echo(f"timeline → {out}", err=True)
+    if markdown is not None:
+        tl.write_markdown(markdown)
+        typer.echo(f"summary  → {markdown}", err=True)
+    if html is not None:
+        from .viewer import write_timeline_html
+
+        write_timeline_html(tl, html, max_nodes=max_nodes)
+        typer.echo(f"page     → {html}", err=True)
+    if figure is not None:
+        try:
+            from . import plot as _plot
+        except ImportError as exc:  # pragma: no cover - depends on optional extra
+            typer.echo(f"{exc}\ninstall with: pip install 'graphdiff[plot]'", err=True)
+            raise typer.Exit(code=2) from None
+        _plot.save(_plot.plot_timeline(tl), figure)
+        typer.echo(f"figure   → {figure}", err=True)
+    if out is None and markdown is None and html is None and figure is None:
+        typer.echo(tl.to_markdown())
+
+
+@app.command()
 def render(
     graph_a: Annotated[Path, typer.Argument(exists=True)],
     graph_b: Annotated[Path, typer.Argument(exists=True)],
@@ -294,6 +363,8 @@ def render(
     context_hops: Annotated[int, typer.Option(help="Unchanged context around differences.")] = 1,
     cluster_by: Annotated[str | None, typer.Option(help="Node attribute to cluster by.")] = None,
     undirected: Annotated[bool, typer.Option()] = False,
+    align: AlignOpt = "exact",
+    align_threshold: ThresholdOpt = 0.6,
 ) -> None:
     """Render the self-contained visual diff for two graphs."""
     from .io import read_graph
@@ -301,7 +372,7 @@ def render(
 
     a = read_graph(graph_a, directed=not undirected)
     b = read_graph(graph_b, directed=not undirected)
-    report = _compare(a, b)
+    report = _compare(a, b, **_align_kwargs(align, align_threshold))
     write_html(report, out, max_nodes=max_nodes, context_hops=context_hops, cluster_by=cluster_by)
     typer.echo(f"viewer → {out}", err=True)
 

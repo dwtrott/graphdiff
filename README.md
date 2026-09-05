@@ -19,9 +19,12 @@ graph** in which every node and edge carries a `status`:
 | `CHANGED` | same identity, differing attributes (old/new recorded) |
 
 Every metric, report, and visualization is derived from that one structure.
-Because node labels are unique, alignment is an exact join — nodes on `label`,
-edges on `(source, type, target)` — so it is `O(n + m)` with no heuristic
-matching and no combinatorial search.
+Because node labels are unique, alignment is an exact join by default — nodes
+on `label`, edges on `(source, type, target)` — so it is `O(n + m)` with no
+heuristic matching and no combinatorial search. When labels drift (case,
+punctuation, renames, typos), [fuzzy alignment](#fuzzy-alignment) recovers the
+correspondences first, with a confidence on each one, and the same union diff
+graph is built on top.
 
 ## Install
 
@@ -138,12 +141,65 @@ briefing, each with its evidence and a pointer to where in the viewer to look:
 Findings lead the markdown summary, the JSON report, the notebook rendering and
 the viewer. `compare(..., findings=False)` skips them and the clustering pass.
 
+### Fuzzy alignment
+
+```python
+report = gd.compare(a, b, align="fuzzy")          # or "normalized"
+report.alignment.counts                            # exact / normalized / fuzzy / unmatched
+report.alignment.fuzzy                             # every inexact match, least confident first
+report.union.nodes[["status", "match_method", "match_confidence", "label_b"]]
+```
+
+Three passes, each cheaper than the next is precise: **exact** labels;
+**normalized** (case-folded, accents and punctuation stripped, whitespace
+collapsed); then **fuzzy** for whatever is left — candidates by character
+trigrams through an inverted index (no all-pairs comparison, so 10^5 unmatched
+labels a side is seconds), each scored on *label similarity* and *structural
+similarity*: the Jaccard of the two nodes' neighbourhoods expressed through
+neighbours that are already aligned. Two nodes that look alike **and** connect
+to the same things are the same thing; two that merely look alike are not.
+Assignment is one-to-one, greedy by score above `align_threshold` (0.6), and
+runs twice so first-round matches anchor the second.
+
+Every fuzzy match carries a **confidence**: its score discounted by how close
+the runner-up was. A match whose best candidate barely beat the second-best is
+ambiguous, and the report says so instead of hiding it — the least confident
+matches lead the Alignment section, a finding states how many nodes would
+otherwise have read as a removal plus an addition, and the viewer draws matched
+nodes with a dashed ring (fainter the surer) whose tooltip names the original
+label. On the example pair with a quarter of B's labels perturbed, edit-distance
+similarity goes from 0.52 (exact join) to 0.80 (fuzzy), which is the truth.
+
 ### Provenance
 
 `report.provenance` records the SHA-256 and size of each input file, every
 parameter the comparison used, and the versions of graphdiff, Python, numpy and
 pandas, so a report can be tied back to exactly what produced it. It is in the
 JSON and at the foot of the markdown.
+
+## Timelines: more than two graphs
+
+```python
+from graphdiff.batch import compare_sequence
+from graphdiff.viewer import write_timeline_html
+
+tl = compare_sequence(["t0.graphml", "t1.graphml", "t2.graphml", "t3.graphml"], align="fuzzy")
+tl.findings            # when it changed, where it keeps changing, what flickered
+tl.churn()             # per step: nodes/edges removed, added, reweighted, similarity
+tl.node_history        # node × step significance — the "where and when" heatmap
+tl.recurrent_nodes()   # notable in several steps: a hotspot, not a one-off
+tl.flickers()          # left and came back: an unstable source, not a change
+write_timeline_html(tl, "timeline.html")
+```
+
+A series answers the questions a pair cannot: was it one event or steady
+drift, which nodes keep changing, and which changes stuck. `compare_sequence`
+runs the pairwise comparison over consecutive snapshots and lifts the results
+one level; each step's full report is kept. The timeline page puts the churn
+strip, the series findings and the node × step heatmap above the full pairwise
+viewer for whichever step is selected (it opens on the busiest), still as one
+file that loads nothing. `graphdiff timeline t0 t1 t2 … --html timeline.html`
+does the same from the shell; `plot_timeline` is the static version.
 
 ## Supported formats
 
@@ -179,8 +235,15 @@ a, b = large_example_pair()   # ~3,000 nodes, ~10,000 edges, 28 communities
 
 A stochastic block model where the change is concentrated in three of the 28
 communities plus a light scatter of noise — the shape real drift usually has,
-and the case the Clusters view exists for. Use this one to judge the viewer; the
-small pair fits in the Overview and makes every other view look redundant.
+and the case the Regions view exists for. Use this one to judge the viewer; the
+small pair fits in the Map and makes every other view look redundant.
+
+```python
+from graphdiff.data import perturb_labels, example_sequence
+
+b_renamed, truth = perturb_labels(b, fraction=0.2)   # for exercising fuzzy alignment
+snapshots = example_sequence()                       # six snapshots: drift, one event, a hotspot, flickers
+```
 
 ## CLI
 
@@ -192,6 +255,7 @@ graphdiff compare A.graphml B.graphml --out report.json --markdown summary.md \
 graphdiff matrix ./graphs/ --metric jaccard_typed_edges --metric ged_similarity \
                            --out scores.parquet --workers 8
 graphdiff render A.graphml B.graphml --out diff.html [--cluster-by kind]
+graphdiff timeline t0.graphml t1.graphml t2.graphml --html timeline.html --markdown tl.md
 graphdiff plot A.graphml B.graphml --out diff.png --kind dashboard   # static PNG/SVG/PDF
 graphdiff serve diff.html --port 8080             # localhost only; nothing outbound
 
@@ -200,7 +264,8 @@ graphdiff check A.graphml B.graphml -r "jaccard_typed_edges>=0.95" -r "nodes.A_O
 graphdiff check A.graphml B.graphml --baseline last-report.json --drift all --tolerance 0.02
 ```
 
-`check` turns a comparison into a pass/fail verdict for CI. Rules are
+Every comparing command takes `--align exact|normalized|fuzzy` and
+`--align-threshold`. `check` turns a comparison into a pass/fail verdict for CI. Rules are
 `quantity<op>number` where the quantity is any scalar metric (optionally
 `.shared`), `nodes.<STATUS>` / `edges.<STATUS>` counts, or
 `significance.max` / `.mean` / `.n_over_X`; `--drift` guards named quantities
@@ -318,8 +383,9 @@ external URL, remote-resource tag, or network primitive appears in the output.
 With the `[plot]` extra, `graphdiff.plot` renders the same encoding to
 PNG / SVG / PDF for slides, papers and CI artifacts: `plot_overview`,
 `plot_clusters`, `plot_top_changed`, `plot_degree_distributions`,
-`plot_similarity_matrix` (from a `matrix` table) and `plot_dashboard`, which
-puts the map, the regions, the top-changed bars and the findings on one page.
+`plot_similarity_matrix` (from a `matrix` table), `plot_timeline` and
+`plot_dashboard`, which puts the map, the regions, the top-changed bars and
+the findings on one page.
 
 ```python
 from graphdiff import plot

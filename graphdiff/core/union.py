@@ -25,6 +25,7 @@ from .._types import (
     TARGET,
     Status,
 )
+from .align import AlignmentResult
 from .graph import PropertyGraph, isin_labels
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -161,6 +162,10 @@ class UnionDiffGraph:
     name_a: str = "A"
     name_b: str = "B"
     comparison: AttributeComparison = AttributeComparison()
+    #: How B's nodes were matched to A's when the join was not exact. ``None``
+    #: for a plain label join. When set, ``nodes`` carries ``match_method``,
+    #: ``match_confidence`` and ``label_b`` (the node's original label in B).
+    alignment: AlignmentResult | None = None
 
     # ------------------------------------------------------------ status views
 
@@ -224,6 +229,7 @@ class UnionDiffGraph:
             name_a=self.name_a,
             name_b=self.name_b,
             comparison=self.comparison,
+            alignment=self.alignment,
         )
 
     # ------------------------------------------------------------- interop
@@ -287,6 +293,7 @@ def build_union_diff_graph(
     name_a: str | None = None,
     name_b: str | None = None,
     comparison: AttributeComparison | None = None,
+    alignment: AlignmentResult | None = None,
 ) -> UnionDiffGraph:
     """Align ``a`` and ``b`` by label and materialize the union diff graph.
 
@@ -298,6 +305,12 @@ def build_union_diff_graph(
         Display names; default to the graphs' own ``name`` or ``"A"``/``"B"``.
     comparison:
         Controls which attributes drive ``CHANGED`` detection.
+    alignment:
+        A :class:`~graphdiff.core.align.AlignmentResult` from
+        :func:`~graphdiff.core.align.align_graphs`. B's matched nodes are
+        renamed onto A's labels before the join, and every union node records
+        how it was matched (``match_method``, ``match_confidence``) and its
+        original label in B (``label_b``).
 
     Raises
     ------
@@ -310,6 +323,9 @@ def build_union_diff_graph(
             f"(A directed={a.directed}, B directed={b.directed})"
         )
     cmp = comparison or AttributeComparison()
+    original_b_name = b.name
+    if alignment is not None:
+        b = alignment.relabel_b(b)
 
     # ---- nodes -------------------------------------------------------------
     union_index = a.nodes.index.union(b.nodes.index)
@@ -329,6 +345,17 @@ def build_union_diff_graph(
 
     nodes.insert(0, CHANGED_ATTRS, node_details)
     nodes.insert(0, STATUS, _status_from_masks(in_a, in_b, node_changed))
+    if alignment is not None:
+        table = alignment.table.set_index("label_a")
+        method = table["method"].reindex(union_index)
+        method = method.where(~(in_a & in_b) | method.notna(), "exact")
+        nodes.insert(2, "match_method", method.fillna("").astype(str).to_numpy())
+        confidence = table["confidence"].reindex(union_index).astype("float64")
+        confidence = confidence.where(~(in_a & in_b) | confidence.notna(), 1.0)
+        nodes.insert(3, "match_confidence", confidence.to_numpy())
+        label_b = table["label_b"].reindex(union_index)
+        label_b = label_b.where(~in_b | label_b.notna(), pd.Series(union_index, index=union_index))
+        nodes.insert(4, "label_b", label_b.to_numpy())
 
     # ---- edges -------------------------------------------------------------
     key = [SOURCE, ETYPE, TARGET]
@@ -358,6 +385,7 @@ def build_union_diff_graph(
         graph_a=a,
         graph_b=b,
         name_a=name_a or a.name or "A",
-        name_b=name_b or b.name or "B",
+        name_b=name_b or original_b_name or "B",
         comparison=cmp,
+        alignment=alignment,
     )

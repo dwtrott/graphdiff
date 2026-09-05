@@ -147,6 +147,41 @@ def generate_findings(
         )
     )
 
+    # ---- alignment ----------------------------------------------------------
+    if union.alignment is not None:
+        ac = union.alignment.counts
+        inexact = ac["normalized"] + ac["fuzzy"]
+        if inexact:
+            fuzzy = union.alignment.fuzzy
+            low = fuzzy[fuzzy["method"] == "fuzzy"].head(3)
+            names = ", ".join(
+                f"{r.label_a} ≈ {r.label_b} ({r.confidence:.2f})" for r in low.itertuples()
+            )
+            n_low = int((fuzzy["confidence"] < 0.7).sum())
+            out.append(
+                Finding(
+                    "alignment",
+                    f"{inexact:,} node{'s' if inexact != 1 else ''} matched despite differing "
+                    f"labels ({ac['normalized']:,} by normalization, {ac['fuzzy']:,} by similarity"
+                    f"{' and shared neighbours' if ac['fuzzy'] else ''}); without that they would "
+                    f"have read as {inexact:,} removals and {inexact:,} additions."
+                    + (
+                        f" {n_low} match{'es are' if n_low != 1 else ' is'} below 0.7 confidence"
+                        f" — least certain: {names}."
+                        if n_low
+                        else ""
+                    ),
+                    severity="medium" if n_low else "low",
+                    view="overview",
+                    target=str(low.iloc[0]["label_a"]) if len(low) else None,
+                    evidence={
+                        **ac,
+                        "n_low_confidence": n_low,
+                        "threshold": union.alignment.threshold,
+                    },
+                )
+            )
+
     # ---- concentration ------------------------------------------------------
     if clusters is not None and len(clusters.clusters) > 1:
         changed_per = np.array([c.n_changed_nodes + c.n_changed_edges for c in clusters.clusters])

@@ -113,6 +113,17 @@ def _build_payload(
             if summary:
                 changed_notes[str(label)] = summary
 
+    matches: dict[str, list[Any]] = {}
+    if "match_method" in node_rows.columns:
+        inexact = node_rows[node_rows["match_method"].isin(["normalized", "fuzzy"])]
+        for label, row in inexact.iterrows():
+            matches[str(label)] = [
+                str(row["match_method"]),
+                round(float(row["match_confidence"]), 3),
+                str(row["label_b"]),
+            ]
+    align_counts = union.alignment.counts if union.alignment is not None else None
+
     metrics: list[list[Any]] = []
     top_changed: list[list[Any]] = []
     egos: list[dict[str, Any]] = []
@@ -242,6 +253,8 @@ def _build_payload(
         "edgeTypes": type_names,
         "edgeNotes": edge_notes,
         "changedNotes": changed_notes,
+        "matches": matches,
+        "alignCounts": align_counts,
         "metrics": metrics,
         "topChanged": top_changed,
         "nodeSig": node_sig,
@@ -828,6 +841,23 @@ D.statuses.forEach((s, i) => {
   });
   legend.appendChild(lab);
 });
+if (D.alignCounts && (D.alignCounts.normalized + D.alignCounts.fuzzy) > 0) {
+  // Inexact matches: a dashed ring, and the count so the reader knows how
+  // much of "in both" rests on the matcher rather than on identical labels.
+  const lab = document.createElement('label');
+  lab.style.cursor = 'default';
+  const ring = document.createElement('span');
+  ring.style.cssText = 'display:inline-block;width:14px;height:14px;border-radius:50%;' +
+    'border:1.5px dashed var(--ink-2);box-sizing:border-box;margin-left:20px;flex:0 0 auto';
+  const name = document.createElement('span');
+  name.className = 'name'; name.textContent = 'Matched despite differing labels';
+  const count = document.createElement('span');
+  count.className = 'count';
+  count.textContent = `${D.alignCounts.normalized + D.alignCounts.fuzzy}`;
+  count.title = `${D.alignCounts.normalized} by normalization, ${D.alignCounts.fuzzy} fuzzy`;
+  lab.append(ring, name, count);
+  legend.appendChild(lab);
+}
 
 const mt = document.querySelector('#metrics tbody');
 D.metrics.forEach(([name, raw, shared]) => {
@@ -978,6 +1008,16 @@ function paint(g, cv, opts) {
     g.globalAlpha = alpha[st] * (lit ? 1 : .12);
     path(g, D.shapes[st], x, y, r);
     g.fillStyle = T.series[st]; g.fill();
+    const mt = D.matches[D.labels[i]];
+    if (mt && lit) {
+      // Dashed ring = this node is "in both" by the matcher's judgement, not
+      // by identical labels; the fainter the ring the surer the match.
+      g.beginPath(); g.arc(x, y, r + 3, 0, 6.2832);
+      g.setLineDash([2.5, 2.5]); g.lineWidth = 1.3; g.strokeStyle = T.ink;
+      g.globalAlpha = alpha[st] * (mt[0] === 'fuzzy' ? (.35 + .6 * (1 - mt[1])) : .35);
+      g.stroke(); g.setLineDash([]);
+      g.globalAlpha = alpha[st] * (lit ? 1 : .12);
+    }
     if (opts.interactive && (i === sel || i === hover || match)) {
       g.lineWidth = 2; g.strokeStyle = T.ink; g.globalAlpha = lit ? 1 : .3; g.stroke();
     } else if (TOP_SIG.has(i) && lit) {
@@ -1073,6 +1113,13 @@ function paint3D() {
     g3.globalAlpha = cue(z);
     path(g3, D.shapes[st], x, y, r);
     g3.fillStyle = T.series[st]; g3.fill();
+    const mt3 = D.matches[D.labels[i]];
+    if (mt3) {
+      g3.beginPath(); g3.arc(x, y, r + 3, 0, 6.2832);
+      g3.setLineDash([2.5, 2.5]); g3.lineWidth = 1.2; g3.strokeStyle = T.ink;
+      g3.globalAlpha = cue(z) * (mt3[0] === 'fuzzy' ? (.35 + .6 * (1 - mt3[1])) : .35);
+      g3.stroke(); g3.setLineDash([]); g3.globalAlpha = cue(z);
+    }
     if (i === hover3 || match) { g3.lineWidth = 2; g3.strokeStyle = T.ink; g3.globalAlpha = 1; g3.stroke(); }
     else if (TOP_SIG.has(i)) {
       g3.beginPath(); g3.arc(x, y, r + 4, 0, 6.2832);
@@ -1327,6 +1374,8 @@ function showCard(i) {
   html += `<div class="nbr" style="margin-top:8px">${D.statusLabels[D.nodeStatus[i]]}</div>`;
   const note = D.changedNotes[D.labels[i]];
   if (note) html += `<div class="nbr">${esc(note)}</div>`;
+  const mtc = D.matches[D.labels[i]];
+  if (mtc) html += `<div class="nbr">${matchText(mtc)}</div>`;
   D.statuses.forEach((s, si) => {
     const set = buckets[si]; if (!set || !set.size) return;
     const names = [...set].slice(0, 8).map(esc).join(', ');
@@ -1410,8 +1459,10 @@ function setTheme(next) {
   mode = next; T = D.themes[next];
   document.documentElement.setAttribute('data-theme', next);
   themeBtn.textContent = next === 'light' ? 'Dark' : 'Light';
-  [...legend.children].forEach((lab, i) =>
-    lab.replaceChild(glyph(i), lab.querySelector('svg.glyph')));
+  [...legend.children].forEach((lab, i) => {
+    const old = lab.querySelector('svg.glyph');
+    if (old) lab.replaceChild(glyph(i), old);  // the match-ring row has no glyph
+  });
   buildCards();
   if (sel >= 0) showCard(sel);
   paintAll();
@@ -1500,11 +1551,19 @@ function pick(px, py) {
   return best;
 }
 
+function matchText(mt) {
+  return mt[0] === 'fuzzy'
+    ? `&asymp; matched to <b>${esc(mt[2])}</b> in ${esc(D.meta.nameB)} by similarity ` +
+      `&middot; confidence ${mt[1].toFixed(2)}`
+    : `&asymp; matched to <b>${esc(mt[2])}</b> in ${esc(D.meta.nameB)} (same label after normalization)`;
+}
+
 function showTip(i, px, py) {
   const note = D.changedNotes[D.labels[i]];
+  const mtt = D.matches[D.labels[i]];
   tip.innerHTML = '<b>' + esc(D.labels[i]) + '</b><br>' +
     D.statusLabels[D.nodeStatus[i]] + ' · ' + inc[i].length + ' edges' +
-    (note ? '<br>' + esc(note) : '');
+    (note ? '<br>' + esc(note) : '') + (mtt ? '<br>' + matchText(mtt) : '');
   tip.style.left = Math.min(px + 16, cO.clientWidth - 330) + 'px';
   tip.style.top = Math.min(py + 16, cO.clientHeight - 60) + 'px';
   tip.style.opacity = 1;
@@ -1551,6 +1610,13 @@ resize();
 if (D.meta.initialView && D.meta.initialView !== 'overview') {
   document.querySelector(`#tabs button[data-v="${D.meta.initialView}"]`).click();
 }
+// Embedded in a timeline page: the parent can select a node or set the theme.
+// Only same-origin/srcdoc parents can reach this; no data leaves the page.
+window.addEventListener('message', e => {
+  const m = e.data || {};
+  if (typeof m.pick === 'string') pickLabel(m.pick);
+  if (m.theme === 'dark' || m.theme === 'light') setTheme(m.theme);
+});
 </script>
 </body>
 </html>

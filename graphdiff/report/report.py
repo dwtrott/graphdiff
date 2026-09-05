@@ -16,6 +16,7 @@ from typing import Any
 import pandas as pd
 
 from .._types import STATUS_ORDER
+from ..core.align import AlignmentResult
 from ..core.union import UnionDiffGraph
 from ..metrics.base import DualScore, to_jsonable
 from ..metrics.cluster import ClusterMap
@@ -125,6 +126,7 @@ class ComparisonReport:
     findings: list[Finding] = field(default_factory=list, repr=False)
     provenance: dict[str, Any] = field(default_factory=dict, repr=False)
     union: UnionDiffGraph | None = field(default=None, repr=False, compare=False)
+    alignment: AlignmentResult | None = field(default=None, repr=False, compare=False)
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     graphdiff_version: str = "0.1.0"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -227,6 +229,9 @@ class ComparisonReport:
                 }
             )
             if self.clusters is not None
+            else None,
+            "alignment": to_jsonable(self.alignment.to_dict())
+            if self.alignment is not None
             else None,
             "provenance": to_jsonable(self.provenance),
             "metadata": to_jsonable(self.metadata),
@@ -338,6 +343,34 @@ class ComparisonReport:
                     f"{row['n_neighbors_b']} | {row['n_added']} | {row['n_removed']} |"
                     for row in top.to_dict("records")
                 ]
+        if self.alignment is not None:
+            c = self.alignment.counts
+            lines += [
+                "",
+                "## Alignment",
+                "",
+                f"Nodes matched: {c['exact']:,} exact, {c['normalized']:,} after normalization, "
+                f"{c['fuzzy']:,} fuzzy (threshold {self.alignment.threshold}); "
+                f"{c['unmatched_a']:,} unmatched in {self.name_a}, "
+                f"{c['unmatched_b']:,} in {self.name_b}.",
+            ]
+            fuzzy = self.alignment.fuzzy.head(top_n)
+            if len(fuzzy):
+                lines += [
+                    "",
+                    "| In A | In B | Method | Label sim. | Structure sim. | Confidence |",
+                    "| --- | --- | --- | ---: | ---: | ---: |",
+                ]
+                for r in fuzzy.itertuples(index=False):
+                    struct = (
+                        "—"
+                        if pd.isna(r.structural_similarity)
+                        else f"{r.structural_similarity:.2f}"
+                    )
+                    lines.append(
+                        f"| {r.label_a} | {r.label_b} | {r.method} | {r.label_similarity:.2f} | "
+                        f"{struct} | {r.confidence:.2f} |"
+                    )
         if self.provenance:
             lines += ["", "## Provenance", ""]
             for k, v in self.provenance.items():

@@ -17,6 +17,7 @@ from .focus import FocusSelection, select_focus
 from .html import render_html, write_html
 from .layout import LayoutParams, force_directed_layout
 from .theme import CHANGE_RAMP, DARK, LIGHT, SHAPES, STATUS_COLORS, status_labels
+from .timeline import render_timeline_html, write_timeline_html
 
 __all__ = [
     "CHANGE_RAMP",
@@ -34,7 +35,9 @@ __all__ = [
     "ego_networks",
     "force_directed_layout",
     "render_html",
+    "render_timeline_html",
     "select_focus",
     "status_labels",
     "write_html",
+    "write_timeline_html",
 ]

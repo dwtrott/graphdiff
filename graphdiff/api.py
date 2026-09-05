@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .core.align import AlignmentResult, AlignMethod, align_graphs
 from .core.graph import PropertyGraph
 from .core.union import AttributeComparison, UnionDiffGraph, build_union_diff_graph
 from .io import read_graph
@@ -99,6 +100,9 @@ def compare(
     metadata: dict[str, Any] | None = None,
     cluster_by: str | None = None,
     findings: bool = True,
+    align: AlignMethod = "exact",
+    align_threshold: float = 0.6,
+    align_options: dict[str, Any] | None = None,
 ) -> ComparisonReport:
     """Compare two graphs and return a full :class:`ComparisonReport`.
 
@@ -130,6 +134,18 @@ def compare(
     findings:
         Generate the plain-language findings list (needs significance and
         clusters; set ``False`` in tight batch loops).
+    align:
+        How B's nodes are matched to A's. ``"exact"`` (default) joins on
+        identical labels. ``"normalized"`` also matches labels that agree after
+        case-folding and stripping punctuation/whitespace. ``"fuzzy"`` further
+        matches the remainder by trigram similarity and shared neighbourhood,
+        each match carrying a confidence — see
+        :func:`~graphdiff.core.align.align_graphs`.
+    align_threshold:
+        Minimum score for a fuzzy match.
+    align_options:
+        Extra keyword arguments for :func:`~graphdiff.core.align.align_graphs`
+        (``label_weight``, ``max_candidates``, ``rounds``, ...).
 
     Returns
     -------
@@ -145,8 +161,18 @@ def compare(
     """
     graph_a = _coerce(a)
     graph_b = _coerce(b)
+    alignment: AlignmentResult | None = None
+    if align != "exact":
+        alignment = align_graphs(
+            graph_a, graph_b, method=align, threshold=align_threshold, **(align_options or {})
+        )
     union = build_union_diff_graph(
-        graph_a, graph_b, name_a=name_a, name_b=name_b, comparison=comparison
+        graph_a,
+        graph_b,
+        name_a=name_a,
+        name_b=name_b,
+        comparison=comparison,
+        alignment=alignment,
     )
     provenance = {
         "input_a": _describe_input(a, graph_a),
@@ -155,6 +181,8 @@ def compare(
             "weight_attribute": weight_attribute,
             "direction": direction,
             "cluster_by": cluster_by,
+            "align": align,
+            "align_threshold": align_threshold if align != "exact" else None,
             "ged_costs": to_jsonable(ged_costs) if ged_costs is not None else "unit",
             "attribute_comparison": to_jsonable(comparison) if comparison is not None else "all",
         },
@@ -232,6 +260,7 @@ def report_from_union(
         findings=found,
         provenance=provenance or {},
         union=union if keep_union else None,
+        alignment=union.alignment,
         metadata=metadata or {},
     )
 
