@@ -109,9 +109,21 @@ gd.write_graph(graph, "out.parquet")
 GraphML is parsed directly (streaming `iterparse`, no networkx). Edge-list
 headers accept the common aliases (`src`/`dst`, `from`/`to`, `relation`).
 
+## Example data
+
+```python
+from graphdiff.data import example_pair
+
+a, b = example_pair()   # two snapshots of a named-entity knowledge graph
+```
+
+52 and 53 nodes of people, organizations and topics with community structure,
+differing by departed and arrived entities, rewired relationships and drifted
+edge weights — every status is represented.
+
 ## CLI
 
-*Phase 2 — not yet implemented.* Planned surface:
+*Not yet implemented.* Planned surface:
 
 ```bash
 graphdiff compare A.graphml B.graphml --out report.json [--markdown summary.md]
@@ -120,11 +132,46 @@ graphdiff inspect A.graphml
 graphdiff serve report.json --port 8080
 ```
 
-## Viewer
+## Visual diff
 
-*Phase 5 — not yet implemented.* A local, fully self-contained browser view of
-one comparison: union overlay with status coloring, layer toggles, label search,
-and the ranked most-changed-nodes table. Zero external requests.
+```python
+import graphdiff as gd
+from graphdiff.viewer import write_html
+
+report = gd.compare("v1.graphml", "v2.graphml")
+write_html(report, "diff.html")      # open it in any browser
+```
+
+The output is **one self-contained HTML file**. Layout is computed here in
+Python and the coordinates are baked into the page, so it ships no layout
+library, loads no fonts, scripts or stylesheets, and makes no network requests
+of any kind. Copy it to an air-gapped machine and double-click it.
+
+What you get: the union graph drawn with `SHARED` muted grey and the
+differences picked out — `A_ONLY` blue, `B_ONLY` orange, `CHANGED` magenta,
+drawn larger and on top. Toggle each status, search by label, hover for the
+old/new attribute values, and click any row of the most-changed-nodes table to
+fly to that node. The scores panel carries every metric, raw and
+shared-subgraph.
+
+At scale the page draws a **focus subgraph** rather than everything: all
+differing elements, plus a ring of unchanged context (`context_hops`), capped at
+`max_nodes` with differences kept ahead of context. The header always states
+how much of the union is actually on screen.
+
+```python
+write_html(report, "diff.html", max_nodes=4000, context_hops=2)
+write_html(report, "changes-only.html", context_hops=0)
+```
+
+`tests/test_viewer.py` enforces the offline guarantee: the build fails if any
+external URL, remote-resource tag, or network primitive appears in the output.
+
+### Interactive server viewer
+
+*Not yet built.* The Vite + React + Cosmograph + FastAPI viewer from the spec
+remains an option for live exploration; the static export above covers reviewing
+and sharing a single comparison, which is the common case.
 
 ## Development
 
