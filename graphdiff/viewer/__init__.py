@@ -11,7 +11,7 @@ greyscale printing and colour-vision deficiency. See :mod:`graphdiff.viewer.them
 
 from __future__ import annotations
 
-from .cluster import Cluster, ClusterMap, cluster_union
+from ..metrics.cluster import Cluster, ClusterMap, cluster_union
 from .ego import EgoNeighbor, EgoNetwork, ego_networks
 from .focus import FocusSelection, select_focus
 from .html import render_html, write_html

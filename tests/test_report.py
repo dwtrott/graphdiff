@@ -100,7 +100,8 @@ class TestRendering:
         assert "# graphdiff: A vs B" in text
         assert "## Composition" in text
         assert "## Scores" in text
-        assert "Most-changed nodes" in text
+        assert "Most significant nodes" in text
+        assert "## Findings" in text
         assert "jaccard_edges" in text
 
     def test_markdown_file_written(self, report, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

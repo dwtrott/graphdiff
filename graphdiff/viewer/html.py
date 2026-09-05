@@ -17,8 +17,8 @@ import pandas as pd
 
 from .._types import CHANGED_ATTRS, ETYPE, LABEL, SOURCE, STATUS, STATUS_ORDER, TARGET
 from ..core.union import UnionDiffGraph
+from ..metrics.cluster import cluster_union
 from ..report.report import ComparisonReport
-from .cluster import cluster_union
 from .ego import ego_networks
 from .focus import select_focus
 from .layout import LayoutParams, force_directed_layout
@@ -117,18 +117,40 @@ def _build_payload(
     top_changed: list[list[Any]] = []
     egos: list[dict[str, Any]] = []
     headline: dict[str, Any] = {}
+    findings: list[dict[str, Any]] = []
+    node_sig: list[float] = [0.0] * len(labels)
     if report is not None:
         for name, values in report.scalar_scores().items():
             metrics.append([name, _num(values["raw"]), _num(values["shared"])])
-        for row in report.neighborhood.top_changed(40).to_dict("records"):
-            top_changed.append(
-                [
-                    str(row[LABEL]),
-                    round(float(row["jaccard"]), 4),
-                    int(row["n_added"]),
-                    int(row["n_removed"]),
-                ]
-            )
+        if report.significance is not None:
+            sig_series = report.significance.table.set_index(LABEL)["significance"]
+            node_sig = [
+                round(float(v), 3) for v in sig_series.reindex(labels).fillna(0.0).to_numpy()
+            ]
+            for row in report.significance.top(max_cards).to_dict("records"):
+                top_changed.append(
+                    [
+                        str(row[LABEL]),
+                        round(float(row["significance"]), 2),
+                        int(row["n_added"]),
+                        int(row["n_removed"]),
+                        int(row["n_changed"]),
+                        str(row["status"]),
+                    ]
+                )
+        else:
+            for row in report.neighborhood.top_changed(max_cards).to_dict("records"):
+                top_changed.append(
+                    [
+                        str(row[LABEL]),
+                        round(1.0 - float(row["jaccard"]), 4),
+                        int(row["n_added"]),
+                        int(row["n_removed"]),
+                        0,
+                        "SHARED",
+                    ]
+                )
+        findings = [f.to_dict() for f in report.findings]
         headline = {
             "similarity": _num(report.score("ged_similarity")),
             "edgeJaccard": _num(report.score("jaccard_typed_edges")),
@@ -150,7 +172,11 @@ def _build_payload(
             )
 
     # ---- aggregate view: one mark per cluster, shaded by change density ----
-    cmap = cluster_union(union, attribute=cluster_by, max_clusters=max_clusters)
+    cmap = (
+        report.clusters
+        if (report is not None and report.clusters is not None and cluster_by is None)
+        else cluster_union(union, attribute=cluster_by, max_clusters=max_clusters)
+    )
     cluster_index = {c.key: i for i, c in enumerate(cmap.clusters)}
     cl_edges = (
         np.array([[i, j] for i, j, _ in cmap.links], dtype=np.int64)
@@ -198,7 +224,7 @@ def _build_payload(
             "headline": headline,
             # A few hundred nodes still reads as a picture; beyond that the
             # overview is a hairball and the aggregate view is the honest start.
-            "initialView": "clusters" if union.n_nodes > 400 else "overview",
+            "initialView": "overview",
         },
         "statuses": STATUS_ORDER,
         "statusLabels": [status_labels(union.name_a, union.name_b)[s] for s in STATUS_ORDER],
@@ -218,6 +244,8 @@ def _build_payload(
         "changedNotes": changed_notes,
         "metrics": metrics,
         "topChanged": top_changed,
+        "nodeSig": node_sig,
+        "findings": findings,
         "egos": egos,
         "clusters": clusters,
         "clusterLinks": cluster_links,
@@ -428,6 +456,17 @@ _TEMPLATE = """<!DOCTYPE html>
   .sub { color: var(--ink-3); font-size: 11px; margin-top: 3px; }
   h2 { font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
        color: var(--ink-3); margin: 0 0 9px; font-weight: 600; }
+  #findings { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.45; }
+  #findings li { margin: 0 0 7px; cursor: pointer; border-radius: 5px; padding: 3px 5px 3px 2px; }
+  #findings li:hover { background: var(--hover); }
+  #findings li.low { color: var(--ink-3); }
+  #findings li .sev {
+    display: inline-block; font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+    font-weight: 600; border-radius: 3px; padding: 0 5px; margin-right: 5px;
+    vertical-align: 1px; color: var(--surface); background: var(--ink-3);
+  }
+  #findings li.high .sev { background: var(--ink); }
+  #findings li .go { color: var(--ink-3); font-size: 11px; white-space: nowrap; }
   .tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
   .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
           padding: 8px 9px; }
@@ -493,8 +532,14 @@ _TEMPLATE = """<!DOCTYPE html>
     padding: 5px 10px; opacity: .93;
   }
   #hud b { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  #mapbar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 4px;
+    padding: 7px 14px; border-bottom: 1px solid var(--line);
+  }
+  #mapbar .seg { padding: 4px 10px; font-size: 11px; border-radius: 6px; }
+  #mapbar .seg.on { background: var(--ink); color: var(--surface); border-color: var(--ink); }
   #drill {
-    position: absolute; left: 14px; top: 14px; font-size: 11px; display: none;
+    position: absolute; left: 14px; top: 56px; font-size: 11px; display: none;
     background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
     padding: 5px 6px 5px 10px; align-items: center; gap: 8px; color: var(--ink-2);
   }
@@ -529,15 +574,22 @@ _TEMPLATE = """<!DOCTYPE html>
 <body>
 <div id="stage">
   <nav id="tabs">
-    <button data-v="overview" class="on">Overview</button>
-    <button data-v="clusters">Clusters</button>
-    <button data-v="cards">Changes</button>
-    <button data-v="compare">Compare</button>
+    <button data-v="overview" class="on">Map</button>
+    <button data-v="clusters">Regions</button>
+    <button data-v="cards">Top changes</button>
+    <button data-v="compare">Before / After</button>
     <button data-v="three">3D</button>
     <span id="tabnote"></span>
   </nav>
 
   <section id="pane-overview" class="pane on">
+    <div id="mapbar">
+      <span class="sub" style="margin:0 6px 0 0">Show</span>
+      <button class="seg on" data-show="all">Everything</button>
+      <button class="seg" data-show="changes">Changes only</button>
+      <button class="seg" data-show="sig">Significant only</button>
+      <span class="sub" style="margin-left:14px">Node size = significance · ring = top 10</span>
+    </div>
     <canvas id="cO"></canvas>
     <div id="drill"></div>
     <div id="hud"></div>
@@ -582,6 +634,11 @@ _TEMPLATE = """<!DOCTYPE html>
     <h1 id="ttl"></h1>
     <div class="sub" id="scale"></div>
   </div>
+  <div class="pad divide" id="findingsBox">
+    <h2>Findings</h2>
+    <ol id="findings"></ol>
+  </div>
+
   <div class="pad divide">
     <h2>Summary</h2>
     <div class="tiles" id="tiles"></div>
@@ -605,9 +662,11 @@ _TEMPLATE = """<!DOCTYPE html>
     <div id="hits"></div>
   </div>
   <div class="pad divide">
-    <h2>Most-changed nodes</h2>
+    <h2>Most significant nodes</h2>
+    <div class="sub" style="margin:-4px 0 7px">Ranked by how unlikely each node's change is
+      under the graph-wide background rate (&minus;log<sub>10</sub> p).</div>
     <table id="changed"><thead><tr>
-      <th>Node</th><th class="n">Jac</th><th class="n">+</th><th class="n">&minus;</th>
+      <th>Node</th><th class="n">Sig</th><th class="n">+</th><th class="n">&minus;</th>
     </tr></thead><tbody></tbody></table>
   </div>
   <div class="pad divide">
@@ -638,7 +697,12 @@ const q = document.getElementById('q'), hits = document.getElementById('hits');
 const on = D.statuses.map(() => true);
 let T = D.themes.light, mode = 'light', vw = 'overview';
 let view = {k: 1, x: 0, y: 0}, hover = -1, sel = -1, blend = .5, split = false;
-let drill = -1, hoverCl = -1, cview = {k: 1, x: 0, y: 0};
+let drill = -1, hoverCl = -1, cview = {k: 1, x: 0, y: 0}, showMode = 'all';
+const SIG_MAX = Math.max(1e-9, ...D.nodeSig);
+const TOP_SIG = new Set(D.topChanged.slice(0, 10).map(r => D.labels.indexOf(r[0])).filter(i => i >= 0));
+// Radius grows with sqrt(significance) so a p = 1e-12 node is visibly bigger
+// than a p = 1e-3 one without a hub swallowing the map.
+const sigScale = i => Math.sqrt(Math.max(0, D.nodeSig[i]) / SIG_MAX);
 const cC = document.getElementById('cC'), gC = cC.getContext('2d');
 const maxDensity = Math.max(1e-9, ...D.clusters.map(c => c.d));
 
@@ -717,6 +781,34 @@ function tile(k, v, d) {
     tile('Similarity', sim, 'normalized edit distance');
 })();
 
+(function findings() {
+  const ol = document.getElementById('findings');
+  if (!D.findings.length) {
+    document.getElementById('findingsBox').style.display = 'none'; return;
+  }
+  const label = {overview: 'map', clusters: 'regions', cards: 'top changes', compare: 'before/after'};
+  D.findings.forEach(f => {
+    const li = document.createElement('li');
+    li.className = f.severity;
+    li.innerHTML = `<span class="sev">${f.severity}</span>${esc(f.text)}` +
+      (f.view ? ` <span class="go">→ ${label[f.view] || f.view}</span>` : '');
+    li.title = f.view ? 'Click to open in the ' + (label[f.view] || f.view) + ' view' : '';
+    li.addEventListener('click', () => goTo(f));
+    ol.appendChild(li);
+  });
+})();
+
+function goTo(f) {
+  if (f.view === 'clusters' && f.target) {
+    const i = D.clusters.findIndex(c => c.k === f.target);
+    if (i >= 0) { setDrill(i); document.querySelector('#tabs button[data-v="overview"]').click();
+      const members = []; for (let n = 0; n < N; n++) if (D.nodeCluster[n] === i) members.push(n);
+      fitTo(members); paintAll(); return; }
+  }
+  if (f.view) document.querySelector(`#tabs button[data-v="${f.view}"]`).click();
+  if (f.target && f.view !== 'clusters') pickLabel(f.target);
+}
+
 const legend = document.getElementById('legend');
 D.statuses.forEach((s, i) => {
   const nc = D.meta.nodeCounts[s] || 0, ec = D.meta.edgeCounts[s] || 0;
@@ -746,10 +838,11 @@ D.metrics.forEach(([name, raw, shared]) => {
 });
 
 const ct = document.querySelector('#changed tbody');
-D.topChanged.forEach(([label, jac, add, rem]) => {
+D.topChanged.forEach(([label, sig, add, rem, chg, st]) => {
   const tr = document.createElement('tr');
   tr.dataset.label = label;
-  tr.innerHTML = `<td>${esc(label)}</td><td class="n">${jac.toFixed(3)}</td>` +
+  tr.title = `${D.statusLabels[D.statuses.indexOf(st)] || st} · ${chg} reweighted`;
+  tr.innerHTML = `<td>${esc(label)}</td><td class="n">${sig.toFixed(1)}</td>` +
     `<td class="n">${add}</td><td class="n">${rem}</td>`;
   tr.addEventListener('click', () => pickLabel(label));
   ct.appendChild(tr);
@@ -800,6 +893,7 @@ function egoCardHTML(e, rank) {
   // Counts wear ink; the coloured glyph beside each carries the identity. A
   // number tinted with the series colour reads as decoration and fails against
   // the surface at small sizes.
+  const sigRow = D.topChanged.find(r => r[0] === e.l);
   const c = {}; D.statuses.forEach((_, i) => { c[i] = (groups[i] || []).length; });
   const pair = (si, txt) =>
     `<span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px">` +
@@ -808,7 +902,8 @@ function egoCardHTML(e, rank) {
     pair(S_CHANGED, '~' + c[S_CHANGED]) + `<span>${c[S_SHARED]} kept</span>`;
 
   return `<div class="card" data-label="${esc(e.l)}">
-    <h3><span class="rank">${rank}</span><span class="nm" title="${esc(e.l)}">${esc(e.l)}</span></h3>
+    <h3><span class="rank">${rank}</span><span class="nm" title="${esc(e.l)}">${esc(e.l)}</span>
+      ${sigRow ? `<span class="rank" title="significance, -log10 p">${sigRow[1].toFixed(1)}</span>` : ''}</h3>
     <div class="meta">${meta}</div>
     <svg class="ego" viewBox="0 0 ${W} ${H}" role="img" aria-label="Neighbourhood of ${esc(e.l)}">
       ${edges}${nodes}${centre}
@@ -853,9 +948,11 @@ function paint(g, cv, opts) {
   const dimming = focusNode >= 0;
 
   const inDrill = i => drill < 0 || D.nodeCluster[i] === drill;
+  const shown = i => inDrill(i) && (!opts.interactive || visibleNode(i));
   for (const [a, b, st] of D.edges) {
     if (!on[st] || alpha[st] <= 0.01) continue;
-    if (!inDrill(a) || !inDrill(b)) continue;
+    if (!shown(a) || !shown(b)) continue;
+    if (opts.interactive && showMode !== 'all' && st === S_SHARED) continue;
     const lit = !dimming || (near.has(a) && near.has(b));
     const shared = st === S_SHARED;
     g.strokeStyle = T.series[st];
@@ -873,28 +970,42 @@ function paint(g, cv, opts) {
     (i, j) => (D.nodeStatus[i] === S_SHARED ? 0 : 1) - (D.nodeStatus[j] === S_SHARED ? 0 : 1));
   for (const i of order) {
     const st = D.nodeStatus[i];
-    if (!on[st] || alpha[st] <= 0.01 || !inDrill(i)) continue;
+    if (!on[st] || alpha[st] <= 0.01 || !shown(i)) continue;
     const match = term && D.labels[i].toLowerCase().includes(term);
     const lit = !dimming || near.has(i);
-    const r = (st === S_SHARED ? base : base * 1.5) + (match ? 3 : 0);
+    const r = (st === S_SHARED ? base : base * 1.3) + base * 2.2 * sigScale(i) + (match ? 3 : 0);
+    const x = sxOf(i, w, h), y = syOf(i, w, h);
     g.globalAlpha = alpha[st] * (lit ? 1 : .12);
-    path(g, D.shapes[st], sxOf(i, w, h), syOf(i, w, h), r);
+    path(g, D.shapes[st], x, y, r);
     g.fillStyle = T.series[st]; g.fill();
     if (opts.interactive && (i === sel || i === hover || match)) {
       g.lineWidth = 2; g.strokeStyle = T.ink; g.globalAlpha = lit ? 1 : .3; g.stroke();
+    } else if (TOP_SIG.has(i) && lit) {
+      // Halo ring on the top-10: the one thing that should be findable from
+      // across the room, before any colour or shape is read.
+      g.beginPath(); g.arc(x, y, r + 4.5, 0, 6.2832);
+      g.lineWidth = 1.8; g.strokeStyle = T.ink; g.globalAlpha = alpha[st] * .85; g.stroke();
     }
   }
   g.globalAlpha = 1;
 
   g.font = '600 11px ui-sans-serif, system-ui, sans-serif';
   g.lineJoin = 'round';
-  const labelled = view.k > 2.4 ? order : (focusNode >= 0 ? [focusNode] : []);
-  for (const i of labelled) {
+  const labelled = view.k > 2.4 ? order
+    : [...new Set([...(focusNode >= 0 ? [focusNode] : []), ...(opts.interactive ? TOP_SIG : [])])];
+  // Greedy declutter: a label that would sit on top of one already drawn is
+  // skipped. Significant nodes are labelled first so they always win.
+  const placed = [];
+  const ordered = [...labelled].sort((i, j) => D.nodeSig[j] - D.nodeSig[i]);
+  for (const i of ordered) {
     const st = D.nodeStatus[i];
-    if (!on[st] || alpha[st] <= 0.01 || !inDrill(i)) continue;
+    if (!on[st] || alpha[st] <= 0.01 || !shown(i)) continue;
     if (dimming && !near.has(i)) continue;
     const x = sxOf(i, w, h) + 9, y = syOf(i, w, h) + 4;
     if (x < -60 || x > w + 60 || y < -20 || y > h + 20) continue;
+    const tw = g.measureText(D.labels[i]).width;
+    if (placed.some(b => x < b[0] + b[2] && x + tw > b[0] && y - 11 < b[1] + 13 && y > b[1])) continue;
+    placed.push([x, y - 11, tw]);
     g.lineWidth = 3; g.strokeStyle = T.surface; g.strokeText(D.labels[i], x, y);
     g.fillStyle = T.ink; g.fillText(D.labels[i], x, y);
   }
@@ -953,23 +1064,29 @@ function paint3D() {
   g3.setLineDash([]);
 
   const order = [];
-  for (let i = 0; i < N; i++) if (on[D.nodeStatus[i]] && inDrill(i)) order.push(i);
+  for (let i = 0; i < N; i++) if (on[D.nodeStatus[i]] && inDrill(i) && visibleNode(i)) order.push(i);
   order.sort((i, j) => proj[j][2] - proj[i][2]);
   for (const i of order) {
     const st = D.nodeStatus[i], [x, y, z, f] = proj[i];
     const match = term && D.labels[i].toLowerCase().includes(term);
-    const r = ((st === S_SHARED ? 2.6 : 4.2) * f * zoom3) + (match ? 3 : 0);
+    const r = ((st === S_SHARED ? 2.6 : 3.6) + 6 * sigScale(i)) * f * zoom3 + (match ? 3 : 0);
     g3.globalAlpha = cue(z);
     path(g3, D.shapes[st], x, y, r);
     g3.fillStyle = T.series[st]; g3.fill();
     if (i === hover3 || match) { g3.lineWidth = 2; g3.strokeStyle = T.ink; g3.globalAlpha = 1; g3.stroke(); }
+    else if (TOP_SIG.has(i)) {
+      g3.beginPath(); g3.arc(x, y, r + 4, 0, 6.2832);
+      g3.lineWidth = 1.6; g3.strokeStyle = T.ink; g3.globalAlpha = cue(z) * .9; g3.stroke();
+    }
   }
   g3.globalAlpha = 1;
-  if (hover3 >= 0 && inDrill(hover3)) {
-    const [x, y] = proj[hover3];
-    g3.font = '600 11px ui-sans-serif, system-ui, sans-serif';
-    g3.lineWidth = 3; g3.strokeStyle = T.surface; g3.strokeText(D.labels[hover3], x + 9, y + 4);
-    g3.fillStyle = T.ink; g3.fillText(D.labels[hover3], x + 9, y + 4);
+  g3.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+  const lab3 = new Set([...TOP_SIG]); if (hover3 >= 0) lab3.add(hover3);
+  for (const i of lab3) {
+    if (!inDrill(i) || !on[D.nodeStatus[i]] || !proj[i]) continue;
+    const [x, y] = proj[i];
+    g3.lineWidth = 3; g3.strokeStyle = T.surface; g3.strokeText(D.labels[i], x + 9, y + 4);
+    g3.fillStyle = T.ink; g3.fillText(D.labels[i], x + 9, y + 4);
   }
 }
 
@@ -1261,6 +1378,18 @@ q.addEventListener('input', () => {
 });
 
 // ---- controls -----------------------------------------------------------
+document.querySelectorAll('#mapbar .seg').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#mapbar .seg').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on'); showMode = btn.dataset.show; paintAll();
+  });
+});
+const visibleNode = i => {
+  if (showMode === 'all') return true;
+  if (showMode === 'changes') return D.nodeStatus[i] !== S_SHARED || inc[i].some(ei => D.edges[ei][2] !== S_SHARED);
+  return TOP_SIG.has(i) || D.nodeSig[i] >= SIG_MAX * .35;
+};
+
 const diffBtn = document.getElementById('diffonly');
 diffBtn.addEventListener('click', () => {
   const next = !(diffBtn.getAttribute('aria-pressed') === 'true');

@@ -8,7 +8,7 @@ import pytest
 import graphdiff as gd
 from graphdiff import build_union_diff_graph
 from graphdiff.data import example_pair
-from graphdiff.viewer.cluster import cluster_union, membership_from_attribute
+from graphdiff.metrics.cluster import cluster_union, membership_from_attribute
 
 from helpers import make_graph, random_graph
 

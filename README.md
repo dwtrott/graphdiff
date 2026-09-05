@@ -45,10 +45,16 @@ import graphdiff as gd
 
 report = gd.compare("v1.graphml", "v2.graphml")
 
+for f in report.findings:                      # plain-language, most important first
+    print(f.severity, f.text)
+
 report.score("jaccard_edges")                  # 0.8185
 report.score("jaccard_edges", shared_subgraph=True)
 report.edge_status_counts                      # {'SHARED': ..., 'CHANGED': ...}
-report.neighborhood.top_changed(10)            # ranked most-changed nodes
+report.top_changed(10)                         # most *significant* nodes (see below)
+report.significance.table                      # every node, ranked, with the evidence
+report.clusters                                # where the change is, by region
+report.provenance                              # input hashes, parameters, versions
 
 report.to_json("report.json")
 report.to_parquet("scores.parquet")            # tidy long format
@@ -79,7 +85,9 @@ different scales.
 | Set-theoretic — Jaccard, overlap, Dice on node / edge / typed-edge sets | how much of each element kind is common? |
 | Exact normalized graph edit distance | what does it cost to turn A into B? |
 | Weighted-edge agreement (Spearman over shared edges) | do the graphs agree on which edges are strong? |
-| Per-node neighborhood delta | **which entities changed the most?** |
+| Per-node neighborhood delta | how much of each node's neighbourhood turned over? |
+| **Per-node significance** (binomial surprise) | **which changes actually matter?** |
+| Cluster change density | *where* is the change — concentrated or diffuse? |
 
 Set-theoretic scores are reported **separately** per element kind and never
 blended into one number by default: a pair can share every node while sharing no
@@ -94,6 +102,48 @@ from graphdiff import GEDCosts
 costs = GEDCosts(edge_type_costs={"owns": 10.0, "mentions": 0.5})
 report = gd.compare(a, b, ged_costs=costs)
 ```
+
+### Significance: which changes matter
+
+Neighbourhood Jaccard is a *proportion*, and proportions rank a two-neighbour
+node that lost one edge (0.5) above a 130-edge hub that lost thirty (0.77). For
+"where are the significant changes" that is backwards, so ranking is by
+**statistical surprise** instead: given the graph-wide rate of removals,
+additions and reweightings, how unlikely is what happened to *this* node?
+
+- A leaf losing its one edge when 7% of edges were removed is unremarkable.
+- A hub losing thirty of 130 under that rate has a binomial tail around 1e-12.
+- A removed hub — every edge gone — scores as the extreme event it is.
+
+The background rate for each node is **leave-one-out** (its own edges excluded,
+so a hub that lost everything in an otherwise static graph is not its own
+baseline), and the score is `(1 + surprise) · log2(2 + magnitude)` where
+`surprise = -log10 p` summed across the three tests, so a large change still
+outranks a small one when neither is statistically unusual. Alongside it:
+**impact** (edge changes weighted by PageRank in the union) and **centrality
+shift** (PageRank in B minus A) for the node that quietly became, or stopped
+being, a hub.
+
+### Findings
+
+Every report carries a short list of sentences a person could read aloud in a
+briefing, each with its evidence and a pointer to where in the viewer to look:
+
+> 94% similar by edit distance. 120 of 3,134 nodes and 1,413 of 10,358 edges differ …
+> The change is concentrated: 3 of 28 clusters account for 94% of everything that differs …
+> Cluster around c16-n014 (129 nodes) had 72% of its own structure change …
+> 61 well-connected nodes (degree ≥ 5) disappeared from baseline — most connected: …
+> Background rates: 7% of baseline's edges were removed, 6% of rebuilt's edges are new …
+
+Findings lead the markdown summary, the JSON report, the notebook rendering and
+the viewer. `compare(..., findings=False)` skips them and the clustering pass.
+
+### Provenance
+
+`report.provenance` records the SHA-256 and size of each input file, every
+parameter the comparison used, and the versions of graphdiff, Python, numpy and
+pandas, so a report can be tied back to exactly what produced it. It is in the
+JSON and at the foot of the markdown.
 
 ## Supported formats
 
@@ -142,8 +192,21 @@ graphdiff compare A.graphml B.graphml --out report.json --markdown summary.md \
 graphdiff matrix ./graphs/ --metric jaccard_typed_edges --metric ged_similarity \
                            --out scores.parquet --workers 8
 graphdiff render A.graphml B.graphml --out diff.html [--cluster-by kind]
+graphdiff plot A.graphml B.graphml --out diff.png --kind dashboard   # static PNG/SVG/PDF
 graphdiff serve diff.html --port 8080             # localhost only; nothing outbound
+
+# regression gate: exit 1 when a rule fails
+graphdiff check A.graphml B.graphml -r "jaccard_typed_edges>=0.95" -r "nodes.A_ONLY<=0"
+graphdiff check A.graphml B.graphml --baseline last-report.json --drift all --tolerance 0.02
 ```
+
+`check` turns a comparison into a pass/fail verdict for CI. Rules are
+`quantity<op>number` where the quantity is any scalar metric (optionally
+`.shared`), `nodes.<STATUS>` / `edges.<STATUS>` counts, or
+`significance.max` / `.mean` / `.n_over_X`; `--drift` guards named quantities
+(or `all`) against a stored report within `--tolerance`. `--json` emits the
+verdict as data. The same thing is available in Python as
+`graphdiff.report.check.run_checks`.
 
 `matrix` scores every pair in a directory over a `multiprocessing` pool, with
 progress on stderr, into the same tidy long format `compare --parquet` writes
@@ -189,14 +252,16 @@ relationships. **Differences only** hides the shared scaffolding. Search by
 label, toggle any status, click a row of the most-changed table to fly to that
 node, `Esc` to clear. The theme follows your OS and has a manual toggle.
 
-### Five views
+### The views
 
-The page opens on **Overview** for small graphs and on **Clusters** for anything
-past a few hundred nodes, because at that size the overview is a hairball and
-the aggregate view is the honest place to start. Overview answers "how much
-changed"; the others answer *where*:
+The page opens on the **Map** with the **Findings** panel beside it. The Map
+draws the differences with node size and a halo proportional to significance
+and labels only the most significant, so the eye lands on what matters before
+anything is clicked. Its show-mode switch narrows from *everything* to
+*changes only* to *significant only*; every finding is a link that switches to
+the right view and selects the node or cluster it talks about.
 
-**Clusters** is the one that scales. The union is partitioned (Louvain by
+**Regions** is the one that scales. The union is partitioned (Louvain by
 default, or by any node attribute you name), and each partition is drawn as one
 mark sized by membership and shaded by **change density** — the share of its own
 nodes and internal edges that differ. A million nodes becomes twenty blobs, the
@@ -210,7 +275,7 @@ write_html(report, "diff.html", cluster_by="kind")   # partition by an attribute
 ```
 
 
-**Changes** is the one to use when you already know roughly where to look. One small card per most-changed node, in the
+**Top changes** is the one to use when you already know roughly where to look. One small card per most-changed node, in the
 same rank order as the analysis, each showing that node's neighbourhood.
 Neighbours sit in fixed angular sectors — *removed left, added right, reweighted
 below, unchanged above* — so the same kind of change lands in the same place on
@@ -218,17 +283,18 @@ every card, and a wall of cards is scannable instead of forty separate puzzles.
 Cards are built from the whole union, never the drawn subset, so one is never
 missing a neighbour the overview happened to cap away.
 
-**Compare** draws both graphs on *identical coordinates*. Nothing moves between
+**Before / After** draws both graphs on *identical coordinates*. Nothing moves between
 them, so anything that appears or vanishes is unmissable. A slider crossfades A
 into B; **Flicker** alternates them automatically, which turns the diff into
 motion — a far stronger perceptual channel than colour. **Split** puts them side
 by side with linked pan and zoom.
 
-**3D** is a presentation mode: a separate three-dimensional force layout
-(depth is real, not a random z), drawn with a plain perspective projection onto
-the canvas — no WebGL, no library, nothing to bundle — with depth cueing,
-drag-to-rotate, and auto-rotate. It reads well in a room. The analysis views stay
-flat on purpose; rotation costs accuracy at a desk.
+**3D** is a separate three-dimensional force layout (depth is real, not a
+random z), drawn with a plain perspective projection onto the canvas — no WebGL,
+no library, nothing to bundle — with depth cueing, drag-to-rotate, auto-rotate,
+and the same significance sizing, halos, labels and show modes as the Map, so
+nothing is lost by switching. Dense graphs that are a hairball flat often
+separate in depth.
 
 ```python
 write_html(report, "diff.html", max_cards=60, max_card_neighbors=30)
@@ -246,6 +312,19 @@ write_html(report, "changes-only.html", context_hops=0)
 
 `tests/test_viewer.py` enforces the offline guarantee: the build fails if any
 external URL, remote-resource tag, or network primitive appears in the output.
+
+### Static figures
+
+With the `[plot]` extra, `graphdiff.plot` renders the same encoding to
+PNG / SVG / PDF for slides, papers and CI artifacts: `plot_overview`,
+`plot_clusters`, `plot_top_changed`, `plot_degree_distributions`,
+`plot_similarity_matrix` (from a `matrix` table) and `plot_dashboard`, which
+puts the map, the regions, the top-changed bars and the findings on one page.
+
+```python
+from graphdiff import plot
+plot.save(plot.plot_dashboard(report), "diff.png")
+```
 
 ### Interactive server viewer
 

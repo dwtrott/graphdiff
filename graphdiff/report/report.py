@@ -18,10 +18,13 @@ import pandas as pd
 from .._types import STATUS_ORDER
 from ..core.union import UnionDiffGraph
 from ..metrics.base import DualScore, to_jsonable
+from ..metrics.cluster import ClusterMap
 from ..metrics.ged import GEDResult
 from ..metrics.neighborhood import NeighborhoodDeltaResult
 from ..metrics.settheoretic import SetTheoreticResult
+from ..metrics.significance import SignificanceResult
 from ..metrics.weights import WeightAgreementResult
+from .findings import Finding
 
 __all__ = ["SCALAR_METRICS", "ComparisonReport"]
 
@@ -91,6 +94,16 @@ class ComparisonReport:
     neighborhood:
         Per-node neighborhood delta; inherently restricted to shared nodes, so
         it has no dual form.
+    significance:
+        Per-node statistical surprise — the ranking every "most changed" view
+        uses. See :mod:`graphdiff.metrics.significance` for why not Jaccard.
+    clusters:
+        Partition of the union with per-cluster change density.
+    findings:
+        Plain-language statements about the comparison, most important first.
+    provenance:
+        What was compared and how: input paths and content hashes, parameters,
+        library versions. Enough to reproduce the report or to audit it.
     union:
         The union diff graph the report was derived from. Not serialized to JSON
         by default — write it separately with
@@ -107,6 +120,10 @@ class ComparisonReport:
     ged: DualScore[GEDResult]
     weight_agreement: DualScore[WeightAgreementResult]
     neighborhood: NeighborhoodDeltaResult
+    significance: SignificanceResult | None = field(default=None, repr=False)
+    clusters: ClusterMap | None = field(default=None, repr=False, compare=False)
+    findings: list[Finding] = field(default_factory=list, repr=False)
+    provenance: dict[str, Any] = field(default_factory=dict, repr=False)
     union: UnionDiffGraph | None = field(default=None, repr=False, compare=False)
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     graphdiff_version: str = "0.1.0"
@@ -131,6 +148,12 @@ class ComparisonReport:
             "neighborhood_median_jaccard": self.neighborhood.median_jaccard,
         }
         return {name: {"raw": raw.get(name), "shared": shared.get(name)} for name in SCALAR_METRICS}
+
+    def top_changed(self, n: int = 25) -> pd.DataFrame:
+        """The ``n`` most significant nodes (falls back to neighbourhood Jaccard)."""
+        if self.significance is not None:
+            return self.significance.top(n)
+        return self.neighborhood.top_changed(n)
 
     def score(self, metric: str, *, shared_subgraph: bool = False) -> float | None:
         """Look up one canonical scalar score by name."""
@@ -183,6 +206,29 @@ class ComparisonReport:
             },
             # to_jsonable turns NaN into null; bare NaN is not valid JSON.
             "scalar_scores": to_jsonable(self.scalar_scores()),
+            "findings": [f.to_dict() for f in self.findings],
+            "significance": to_jsonable(self.significance.to_dict())
+            if self.significance is not None
+            else None,
+            "clusters": to_jsonable(
+                {
+                    "method": self.clusters.method,
+                    "clusters": [
+                        {
+                            "key": c.key,
+                            "name": c.name,
+                            "size": c.size,
+                            "change_density": c.change_density,
+                            "node_counts": c.node_counts,
+                            "edge_counts": c.edge_counts,
+                        }
+                        for c in self.clusters.clusters
+                    ],
+                }
+            )
+            if self.clusters is not None
+            else None,
+            "provenance": to_jsonable(self.provenance),
             "metadata": to_jsonable(self.metadata),
         }
 
@@ -235,6 +281,12 @@ class ComparisonReport:
             "",
             f"*{'Directed' if self.directed else 'Undirected'} graphs, compared {self.created_at}*",
             "",
+        ]
+        if self.findings:
+            lines += ["## Findings", ""]
+            lines += [f"- **{f.severity}** — {f.text}" for f in self.findings]
+            lines += [""]
+        lines += [
             "## Composition",
             "",
             "| Status | Nodes | Edges |",
@@ -253,20 +305,46 @@ class ComparisonReport:
             f"| {name} | {fmt(v['raw'])} | {fmt(v['shared'])} |" for name, v in scores.items()
         ]
 
-        top = self.neighborhood.top_changed(top_n)
-        if len(top):
-            lines += [
-                "",
-                f"## Most-changed nodes (top {len(top)})",
-                "",
-                "| Node | Neighborhood Jaccard | Neighbors A | Neighbors B | Added | Removed |",
-                "| --- | ---: | ---: | ---: | ---: | ---: |",
-            ]
-            lines += [
-                f"| {row['label']} | {row['jaccard']:.4f} | {row['n_neighbors_a']} | "
-                f"{row['n_neighbors_b']} | {row['n_added']} | {row['n_removed']} |"
-                for row in top.to_dict("records")
-            ]
+        if self.significance is not None:
+            top = self.significance.top(top_n)
+            if len(top):
+                lines += [
+                    "",
+                    f"## Most significant nodes (top {len(top)})",
+                    "",
+                    "| Node | Status | Significance | Surprise (-log10 p) | Removed | Added | "
+                    "Reweighted | Degree A → B |",
+                    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                ]
+                lines += [
+                    f"| {r['label']} | {r['status']} | {r['significance']:.1f} | "
+                    f"{r['surprise']:.1f} | "
+                    f"{int(r['n_removed'])} | {int(r['n_added'])} | {int(r['n_changed'])} | "
+                    f"{int(r['degree_a'])} → {int(r['degree_b'])} |"
+                    for r in top.to_dict("records")
+                ]
+        else:
+            top = self.neighborhood.top_changed(top_n)
+            if len(top):
+                lines += [
+                    "",
+                    f"## Most-changed nodes (top {len(top)})",
+                    "",
+                    "| Node | Neighborhood Jaccard | Neighbors A | Neighbors B | Added | Removed |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: |",
+                ]
+                lines += [
+                    f"| {row['label']} | {row['jaccard']:.4f} | {row['n_neighbors_a']} | "
+                    f"{row['n_neighbors_b']} | {row['n_added']} | {row['n_removed']} |"
+                    for row in top.to_dict("records")
+                ]
+        if self.provenance:
+            lines += ["", "## Provenance", ""]
+            for k, v in self.provenance.items():
+                if isinstance(v, dict):
+                    lines.append(f"- **{k}**: " + ", ".join(f"{kk}={vv}" for kk, vv in v.items()))
+                else:
+                    lines.append(f"- **{k}**: {v}")
         return "\n".join(lines) + "\n"
 
     def write_markdown(self, path: str | Path, *, top_n: int = 10) -> Path:
@@ -292,12 +370,27 @@ class ComparisonReport:
             f"<td style='text-align:right'>{fmt(v['shared'])}</td></tr>"
             for name, v in scores.items()
         )
-        top = self.neighborhood.top_changed(10)
-        top_rows = "".join(
-            f"<tr><td>{r['label']}</td><td style='text-align:right'>{r['jaccard']:.4f}</td>"
-            f"<td style='text-align:right'>{r['n_added']}</td>"
-            f"<td style='text-align:right'>{r['n_removed']}</td></tr>"
-            for r in top.to_dict("records")
+        top = self.top_changed(10)
+        if self.significance is not None:
+            top_rows = "".join(
+                f"<tr><td>{r['label']}</td><td style='text-align:right'>{r['significance']:.1f}</td>"
+                f"<td style='text-align:right'>{int(r['n_added'])}</td>"
+                f"<td style='text-align:right'>{int(r['n_removed'])}</td></tr>"
+                for r in top.to_dict("records")
+            )
+            top_head = "Significance"
+        else:
+            top_rows = "".join(
+                f"<tr><td>{r['label']}</td><td style='text-align:right'>{r['jaccard']:.4f}</td>"
+                f"<td style='text-align:right'>{r['n_added']}</td>"
+                f"<td style='text-align:right'>{r['n_removed']}</td></tr>"
+                for r in top.to_dict("records")
+            )
+            top_head = "Jaccard"
+        findings_html = "".join(
+            f"<li style='margin:2px 0'><span style='font-size:10px;text-transform:uppercase;"
+            f"color:#888'>{f.severity}</span> {f.text}</li>"
+            for f in self.findings[:6]
         )
         style = "border-collapse:collapse;font-size:12px;margin-right:24px;vertical-align:top"
         cell = "padding:2px 8px;border-bottom:1px solid #eee"
@@ -307,6 +400,7 @@ class ComparisonReport:
   <div style="color:#666;font-size:11px;margin-bottom:8px">
     {"directed" if self.directed else "undirected"} &middot; {self.created_at}
   </div>
+  <ul style="margin:0 0 10px;padding-left:18px;font-size:12px;max-width:820px">{findings_html}</ul>
   <div style="display:flex;flex-wrap:wrap">
     <table style="{style}">
       <thead><tr><th style="{cell}">Status</th><th style="{cell}">Nodes</th>
@@ -317,7 +411,7 @@ class ComparisonReport:
       <th style="{cell}">Shared</th></tr></thead><tbody>{score_rows}</tbody>
     </table>
     <table style="{style}">
-      <thead><tr><th style="{cell}">Most-changed node</th><th style="{cell}">Jaccard</th>
+      <thead><tr><th style="{cell}">Most significant</th><th style="{cell}">{top_head}</th>
       <th style="{cell}">+</th><th style="{cell}">&minus;</th></tr></thead>
       <tbody>{top_rows}</tbody>
     </table>

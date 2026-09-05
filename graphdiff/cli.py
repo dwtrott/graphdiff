@@ -166,6 +166,126 @@ def matrix(
 
 
 @app.command()
+def check(
+    graph_a: Annotated[Path, typer.Argument(exists=True, help="First graph (any format).")],
+    graph_b: Annotated[Path, typer.Argument(exists=True, help="Second graph (any format).")],
+    rule: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--rule",
+            "-r",
+            help="Threshold, repeatable: jaccard_typed_edges>=0.95, nodes.A_ONLY<=0, "
+            "significance.max<=20, ged_similarity.shared>=0.9",
+        ),
+    ] = None,
+    baseline: Annotated[
+        Path | None, typer.Option(exists=True, help="A previous report.json to guard against.")
+    ] = None,
+    drift: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Quantity that may move at most --tolerance from the baseline; repeatable."
+        ),
+    ] = None,
+    tolerance: Annotated[float, typer.Option(help="Allowed absolute drift per quantity.")] = 0.01,
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="Also write report JSON.")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit the verdict as JSON.")] = False,
+    undirected: Annotated[bool, typer.Option()] = False,
+    weight: Annotated[str, typer.Option(help="Edge attribute for weight agreement.")] = "weight",
+) -> None:
+    """Regression gate: exit 1 when any rule fails, 0 when all pass.
+
+    Rules compare a quantity with a number. Quantities are any scalar metric
+    (optionally ``.shared``), ``nodes.<STATUS>`` / ``edges.<STATUS>`` counts,
+    or ``significance.max`` / ``.mean`` / ``.n_over_X``. With ``--baseline``,
+    ``--drift`` names quantities that must stay within ``--tolerance`` of the
+    stored report; ``--drift all`` guards every scalar metric.
+    """
+    from .io import read_graph
+    from .report.check import load_baseline, parse_check, run_checks
+
+    rules = rule or []
+    drifts = drift or []
+    if not rules and not drifts:
+        typer.echo("nothing to check: pass at least one --rule or --drift", err=True)
+        raise typer.Exit(code=2)
+    try:
+        checks = [parse_check(r) for r in rules]
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    if drifts and baseline is None:
+        typer.echo("--drift needs --baseline", err=True)
+        raise typer.Exit(code=2)
+    if drifts == ["all"]:
+        drifts = list(SCALAR_METRICS)
+
+    a = read_graph(graph_a, directed=not undirected)
+    b = read_graph(graph_b, directed=not undirected)
+    report = _compare(a, b, weight_attribute=weight)
+    if out is not None:
+        report.to_json(out)
+    try:
+        verdict = run_checks(
+            report,
+            checks,
+            baseline=load_baseline(baseline) if baseline is not None else None,
+            tolerance=tolerance,
+            drift=drifts,
+        )
+    except KeyError as exc:
+        typer.echo(str(exc.args[0]), err=True)
+        raise typer.Exit(code=2) from None
+
+    if as_json:
+        typer.echo(json.dumps(verdict.to_dict(), indent=2))
+    else:
+        typer.echo(verdict.summary())
+    raise typer.Exit(code=0 if verdict.ok else 1)
+
+
+@app.command()
+def plot(
+    graph_a: Annotated[Path, typer.Argument(exists=True)],
+    graph_b: Annotated[Path, typer.Argument(exists=True)],
+    out: Annotated[Path, typer.Option("--out", "-o", help="PNG/SVG/PDF path.")] = Path("diff.png"),
+    kind: Annotated[
+        str,
+        typer.Option(help="overview | clusters | top | degrees | dashboard"),
+    ] = "dashboard",
+    max_nodes: Annotated[int, typer.Option(help="Cap on drawn nodes.")] = 2000,
+    top: Annotated[int, typer.Option(help="Bars in the top-changed chart.")] = 20,
+    cluster_by: Annotated[str | None, typer.Option(help="Node attribute to cluster by.")] = None,
+    undirected: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Static figure of the diff (needs the [plot] extra: matplotlib)."""
+    from .io import read_graph
+
+    try:
+        from . import plot as _plot
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        typer.echo(f"{exc}\ninstall with: pip install 'graphdiff[plot]'", err=True)
+        raise typer.Exit(code=2) from None
+
+    a = read_graph(graph_a, directed=not undirected)
+    b = read_graph(graph_b, directed=not undirected)
+    report = _compare(a, b, cluster_by=cluster_by)
+    kinds = {
+        "overview": lambda: _plot.plot_overview(report, max_nodes=max_nodes),
+        "clusters": lambda: _plot.plot_clusters(report, max_nodes=max_nodes),
+        "top": lambda: _plot.plot_top_changed(report, n=top),
+        "degrees": lambda: _plot.plot_degree_distributions(report),
+        "dashboard": lambda: _plot.plot_dashboard(report, max_nodes=max_nodes, top=top),
+    }
+    if kind not in kinds:
+        typer.echo(f"unknown --kind {kind!r}; choose from {', '.join(kinds)}", err=True)
+        raise typer.Exit(code=2)
+    fig = kinds[kind]()
+    _plot.save(fig, out)
+    typer.echo(f"figure → {out}", err=True)
+
+
+@app.command()
 def render(
     graph_a: Annotated[Path, typer.Argument(exists=True)],
     graph_b: Annotated[Path, typer.Argument(exists=True)],

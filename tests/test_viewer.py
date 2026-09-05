@@ -362,12 +362,12 @@ class TestThreeD:
         assert '"p3":' in html
         assert 'data-v="three"' in html
 
-    def test_large_graph_opens_on_clusters(self) -> None:
+    def test_every_graph_opens_on_the_map(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        """The Map (findings + significance halos) is the entry point at any size."""
         from graphdiff.data import large_example_pair
 
+        assert '"initialView":"overview"' in render_html(demo_report)
         a, b = large_example_pair(n_communities=6, community_size=80)
         html = render_html(gd.compare(a, b), max_nodes=300)
-        assert '"initialView":"clusters"' in html
-
-    def test_small_graph_opens_on_overview(self, demo_report) -> None:  # type: ignore[no-untyped-def]
-        assert '"initialView":"overview"' in render_html(demo_report)
+        assert '"initialView":"overview"' in html
+        assert '"findings":[' in html
