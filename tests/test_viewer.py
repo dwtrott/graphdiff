@@ -15,6 +15,7 @@ import pytest
 
 import graphdiff as gd
 from graphdiff import PropertyGraph, build_union_diff_graph
+from graphdiff._types import STATUS_ORDER
 from graphdiff.data import example_pair
 from graphdiff.viewer import (
     LayoutParams,
@@ -180,3 +181,50 @@ class TestRenderedContent:
     def test_empty_graphs_render(self, empty_graph: PropertyGraph) -> None:
         html = render_html(build_union_diff_graph(empty_graph, empty_graph))
         assert "<canvas" in html
+
+
+class TestEncoding:
+    """Status is encoded twice — hue and shape — so colour is never load-bearing."""
+
+    def test_every_status_has_a_distinct_shape(self) -> None:
+        from graphdiff.viewer import SHAPES
+
+        assert set(SHAPES) == set(STATUS_ORDER)
+        assert len(set(SHAPES.values())) == len(SHAPES), "two statuses share a silhouette"
+
+    def test_shapes_reach_the_page(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        from graphdiff.viewer import SHAPES
+
+        html = render_html(demo_report)
+        for shape in SHAPES.values():
+            assert f"'{shape}'" in html or f'"{shape}"' in html
+
+    def test_legend_names_the_two_graphs(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        html = render_html(demo_report)
+        assert "Only in snapshot_2024" in html
+        assert "Only in snapshot_2025" in html
+
+    def test_both_themes_are_embedded(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        from graphdiff.viewer import DARK, LIGHT
+
+        html = render_html(demo_report)
+        for theme in (LIGHT, DARK):
+            for status in STATUS_ORDER:
+                assert theme[status] in html
+        assert LIGHT["surface"] in html and DARK["surface"] in html
+
+    def test_dark_is_not_a_flip_of_light(self) -> None:
+        from graphdiff.viewer import DARK, LIGHT
+
+        # The neutral and the two graph hues are re-stepped for the dark surface.
+        assert DARK["SHARED"] != LIGHT["SHARED"]
+        assert DARK["A_ONLY"] != LIGHT["A_ONLY"]
+        assert DARK["B_ONLY"] != LIGHT["B_ONLY"]
+
+    def test_status_labels_fall_back_to_graph_names(self) -> None:
+        from graphdiff.viewer import status_labels
+
+        labels = status_labels("v1", "v2")
+        assert labels["A_ONLY"] == "Only in v1"
+        assert labels["B_ONLY"] == "Only in v2"
+        assert labels["SHARED"] == "In both"

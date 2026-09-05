@@ -147,12 +147,27 @@ Python and the coordinates are baked into the page, so it ships no layout
 library, loads no fonts, scripts or stylesheets, and makes no network requests
 of any kind. Copy it to an air-gapped machine and double-click it.
 
-What you get: the union graph drawn with `SHARED` muted grey and the
-differences picked out — `A_ONLY` blue, `B_ONLY` orange, `CHANGED` magenta,
-drawn larger and on top. Toggle each status, search by label, hover for the
-old/new attribute values, and click any row of the most-changed-nodes table to
-fly to that node. The scores panel carries every metric, raw and
-shared-subgraph.
+**Status is encoded twice — hue and node shape** — so nothing depends on colour
+alone and the picture survives greyscale printing and colour-vision deficiency:
+
+| Status | Shape | Light | Dark | Edge |
+| --- | --- | --- | --- | --- |
+| In both | circle | grey `#a8afb8` | `#6b7079` | hairline, faded |
+| Only in A | square | blue `#2a78d6` | `#3987e5` | solid |
+| Only in B | triangle | orange `#eb6834` | `#d95926` | solid |
+| Changed | diamond | green `#199e70` | `#199e70` | dashed |
+
+The legend names the graphs rather than the status codes — "Only in
+snapshot_2024", not "A_ONLY". The palette is validated rather than eyeballed:
+all-pairs CVD ΔE 8.4 light / 9.4 dark, normal-vision ΔE 21.6 / 20.9, every hue
+≥ 3:1 against its surface. (A magenta `CHANGED` was tried first and rejected —
+ΔE 12.9 against orange for normal vision, below the 15 floor.)
+
+Interaction: hover or click any node and everything unrelated dims, leaving that
+node's neighbourhood; the side panel then names its added, removed and changed
+relationships. **Differences only** hides the shared scaffolding. Search by
+label, toggle any status, click a row of the most-changed table to fly to that
+node, `Esc` to clear. The theme follows your OS and has a manual toggle.
 
 At scale the page draws a **focus subgraph** rather than everything: all
 differing elements, plus a ring of unchanged context (`context_hops`), capped at
