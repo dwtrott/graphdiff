@@ -12,7 +12,7 @@ import pandas as pd
 
 from ..core.graph import PropertyGraph
 
-__all__ = ["ORGS", "PEOPLE", "TOPICS", "example_pair"]
+__all__ = ["ORGS", "PEOPLE", "TOPICS", "example_pair", "large_example_pair"]
 
 PEOPLE: tuple[str, ...] = (
     "Alvarez",
@@ -203,4 +203,97 @@ def example_pair(seed: int = 11) -> tuple[PropertyGraph, PropertyGraph]:
     frame_b = frame_b.drop_duplicates(subset=["source", "type", "target"], ignore_index=True)
 
     graph_b = PropertyGraph.from_edges(frame_b, name="snapshot_2025")
+    return graph_a, graph_b
+
+
+def large_example_pair(
+    *,
+    n_communities: int = 28,
+    community_size: int = 110,
+    seed: int = 5,
+    changed_communities: int = 3,
+) -> tuple[PropertyGraph, PropertyGraph]:
+    """A pair large enough that the overview is a hairball and the other views matter.
+
+    A stochastic block model: ``n_communities`` dense blocks with sparse links
+    between them, giving roughly 3,000 nodes and 9,000 edges by default. The
+    second snapshot leaves most blocks untouched and concentrates the change in
+    ``changed_communities`` of them — members leave, newcomers arrive, ties are
+    rewired and reweighted — plus a light scatter of noise everywhere. That is
+    the shape real drift usually has, and it is the case the cluster view exists
+    for: a handful of dark marks among many pale ones.
+
+    Returns
+    -------
+    (PropertyGraph, PropertyGraph)
+        ``baseline`` and ``rebuilt``.
+    """
+    rng = np.random.default_rng(seed)
+    members: list[list[str]] = []
+    rows: list[tuple[str, str, str, float]] = []
+    w = lambda lo, hi: round(float(rng.uniform(lo, hi)), 3)  # noqa: E731
+    types = ("links_to", "cites", "mentions")
+
+    for c in range(n_communities):
+        block = [f"c{c:02d}-n{i:03d}" for i in range(community_size)]
+        members.append(block)
+        # Dense inside: each node reaches ~6 others in its block.
+        for a in block:
+            for _ in range(3):
+                b = block[int(rng.integers(0, community_size))]
+                if a != b:
+                    rows.append((a, str(rng.choice(types)), b, w(0.2, 1.0)))
+    # Sparse between blocks.
+    flat = [n for block in members for n in block]
+    for _ in range(n_communities * 25):
+        a, b = rng.choice(flat, size=2, replace=False)
+        rows.append((str(a), "links_to", str(b), w(0.05, 0.4)))
+
+    seen: set[tuple[str, str, str]] = set()
+    base_rows = []
+    for s, t, d, weight in rows:
+        if s == d or (s, t, d) in seen:
+            continue
+        seen.add((s, t, d))
+        base_rows.append((s, t, d, weight))
+    frame_a = pd.DataFrame(base_rows, columns=["source", "type", "target", "weight"])
+    graph_a = PropertyGraph.from_edges(frame_a, name="baseline")
+
+    # ---- the rebuilt snapshot ---------------------------------------------
+    hot = set(rng.choice(n_communities, size=changed_communities, replace=False).tolist())
+    departed: set[str] = set()
+    for c in hot:
+        departed.update(rng.choice(members[c], size=community_size // 5, replace=False))
+
+    later = frame_a[~frame_a["source"].isin(departed) & ~frame_a["target"].isin(departed)].copy()
+
+    in_hot = later["source"].str[:3].isin({f"c{c:02d}" for c in hot})
+    drop = (rng.random(len(later)) < 0.35) & in_hot
+    drop |= rng.random(len(later)) < 0.01  # background noise everywhere
+    later = later.loc[~drop].reset_index(drop=True)
+
+    bump = (rng.random(len(later)) < 0.30) & later["source"].str[:3].isin(
+        {f"c{c:02d}" for c in hot}
+    )
+    later.loc[bump, "weight"] = (later.loc[bump, "weight"] * 1.5).round(3).clip(upper=1.0)
+
+    new_rows: list[tuple[str, str, str, float]] = []
+    for c in hot:
+        survivors = [n for n in members[c] if n not in departed]
+        newcomers = [f"c{c:02d}-new{i:02d}" for i in range(community_size // 6)]
+        for a in newcomers:
+            for _ in range(4):
+                b = str(rng.choice(survivors))
+                new_rows.append((a, str(rng.choice(types)), b, w(0.3, 1.0)))
+        for _ in range(community_size):
+            a, b = rng.choice(survivors, size=2, replace=False)
+            new_rows.append((str(a), str(rng.choice(types)), str(b), w(0.2, 1.0)))
+
+    frame_b = pd.concat(
+        [later, pd.DataFrame(new_rows, columns=["source", "type", "target", "weight"])],
+        ignore_index=True,
+    )
+    frame_b = frame_b[frame_b["source"] != frame_b["target"]]
+    frame_b = frame_b.drop_duplicates(subset=["source", "type", "target"], ignore_index=True)
+    graph_b = PropertyGraph.from_edges(frame_b, name="rebuilt")
     return graph_a, graph_b

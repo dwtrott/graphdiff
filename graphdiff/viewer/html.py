@@ -89,8 +89,21 @@ def _build_payload(
         type_names = []
         edge_array = np.zeros((0, 4), dtype=np.int64)
 
-    coords = force_directed_layout(
-        len(labels), edge_array[:, :2] if len(edge_array) else np.zeros((0, 2)), params=layout
+    pair_index = edge_array[:, :2] if len(edge_array) else np.zeros((0, 2))
+    coords = force_directed_layout(len(labels), pair_index, params=layout)
+    # A separate 3D layout rather than a 2D one with a random z: the third axis
+    # has to be earned by the structure or rotation shows nothing but jitter.
+    coords3 = force_directed_layout(
+        len(labels),
+        pair_index,
+        params=LayoutParams(
+            iterations=max(120, int(layout.iterations * 0.6)),
+            grid=layout.grid,
+            seed=layout.seed,
+            gravity=layout.gravity,
+            initial_temperature=layout.initial_temperature,
+        ),
+        dims=3,
     )
 
     changed_notes: dict[str, str] = {}
@@ -183,6 +196,9 @@ def _build_payload(
             "nodeCounts": node_counts,
             "edgeCounts": edge_counts,
             "headline": headline,
+            # A few hundred nodes still reads as a picture; beyond that the
+            # overview is a hairball and the aggregate view is the honest start.
+            "initialView": "clusters" if union.n_nodes > 400 else "overview",
         },
         "statuses": STATUS_ORDER,
         "statusLabels": [status_labels(union.name_a, union.name_b)[s] for s in STATUS_ORDER],
@@ -195,6 +211,7 @@ def _build_payload(
         "nodeStatus": node_status.tolist(),
         "x": [round(float(v), 5) for v in coords[:, 0]],
         "y": [round(float(v), 5) for v in coords[:, 1]],
+        "p3": [[round(float(v), 4) for v in row] for row in coords3],
         "edges": edge_array.tolist(),
         "edgeTypes": type_names,
         "edgeNotes": edge_notes,
@@ -400,6 +417,11 @@ _TEMPLATE = """<!DOCTYPE html>
     flex: 0 0 336px; border-left: 1px solid var(--line); background: var(--panel);
     overflow-y: auto; overscroll-behavior: contain;
   }
+  @media (max-width: 860px) {
+    body { flex-direction: column; }
+    #stage { flex: 0 0 62vh; }
+    #side { flex: 1 1 auto; border-left: 0; border-top: 1px solid var(--line); }
+  }
   .pad { padding: 14px 16px; }
   .divide { border-top: 1px solid var(--line); }
   h1 { font-size: 14px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
@@ -487,6 +509,16 @@ _TEMPLATE = """<!DOCTYPE html>
   #rampLegend .bar i { width: 22px; height: 9px; display: block; }
   #rampLegend .ends { display: flex; justify-content: space-between;
                       font-variant-numeric: tabular-nums; }
+  #threebar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; border-bottom: 1px solid var(--line);
+  }
+  #threebar .sub { margin: 0; }
+  #tip3 {
+    position: absolute; pointer-events: none; background: var(--tip-bg); color: var(--tip-ink);
+    padding: 7px 10px; border-radius: 7px; font-size: 12px; opacity: 0;
+    transition: opacity .09s; z-index: 5; box-shadow: var(--shadow);
+  }
   #clusterHint {
     position: absolute; right: 14px; bottom: 14px; font-size: 11px; color: var(--ink-3);
     background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
@@ -501,6 +533,7 @@ _TEMPLATE = """<!DOCTYPE html>
     <button data-v="clusters">Clusters</button>
     <button data-v="cards">Changes</button>
     <button data-v="compare">Compare</button>
+    <button data-v="three">3D</button>
     <span id="tabnote"></span>
   </nav>
 
@@ -519,6 +552,16 @@ _TEMPLATE = """<!DOCTYPE html>
 
   <section id="pane-cards" class="pane">
     <div id="cards"></div>
+  </section>
+
+  <section id="pane-three" class="pane">
+    <div id="threebar">
+      <button id="spin" aria-pressed="true">Auto-rotate</button>
+      <button id="threeReset">Reset</button>
+      <span class="sub">drag to rotate · scroll to zoom · hover for labels</span>
+    </div>
+    <canvas id="c3"></canvas>
+    <div id="tip3"></div>
   </section>
 
   <section id="pane-compare" class="pane">
@@ -857,36 +900,197 @@ function paint(g, cv, opts) {
   }
 }
 
+// ---- 3D -----------------------------------------------------------------
+// A presentation mode. Depth is real (a separate 3D force layout), but the
+// analysis views stay flat on purpose: rotation reads well in a room and costs
+// accuracy at a desk. Everything here is a plain perspective projection onto
+// the 2D canvas — no WebGL, no library, nothing to bundle.
+const c3 = document.getElementById('c3'), g3 = c3.getContext('2d');
+const tip3 = document.getElementById('tip3');
+let yaw = .6, pitch = .35, zoom3 = 1, spin = true, spinHandle = null, hover3 = -1;
+let proj = null;  // per-node [sx, sy, depth, scale] for the last frame
+
+function project(w, h) {
+  const cy = Math.cos(yaw), sy_ = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const fov = 2.6, S = Math.min(w, h) * .78 * zoom3;
+  const out = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const p = D.p3[i];
+    const x0 = p[0] - .5, y0 = p[1] - .5, z0 = p[2] - .5;
+    const x1 = x0 * cy + z0 * sy_, z1 = -x0 * sy_ + z0 * cy;         // yaw about Y
+    const y2 = y0 * cp - z1 * sp, z2 = y0 * sp + z1 * cp;             // pitch about X
+    const f = fov / (fov + z2);
+    out[i] = [w / 2 + x1 * f * S, h / 2 + y2 * f * S, z2, f];
+  }
+  return out;
+}
+
+function paint3D() {
+  const w = c3.clientWidth, h = c3.clientHeight;
+  g3.clearRect(0, 0, w, h);
+  if (!N) return;
+  proj = project(w, h);
+  const inDrill = i => drill < 0 || D.nodeCluster[i] === drill;
+  const term = q.value.trim().toLowerCase();
+
+  // Depth cue: far things are small and faint, near things large and solid.
+  const cue = z => .3 + .7 * (1 - (z + .7) / 1.4);
+
+  const edges = [];
+  for (const [a, b, st] of D.edges) {
+    if (!on[st] || !inDrill(a) || !inDrill(b)) continue;
+    edges.push([a, b, st, (proj[a][2] + proj[b][2]) / 2]);
+  }
+  edges.sort((p, q) => q[3] - p[3]);
+  for (const [a, b, st, z] of edges) {
+    const shared = st === S_SHARED;
+    g3.strokeStyle = T.series[st];
+    g3.globalAlpha = Math.max(.04, cue(z)) * (shared ? .28 : .8);
+    g3.lineWidth = shared ? .8 : 1.6;
+    g3.setLineDash(st === S_CHANGED ? [4, 3] : []);
+    g3.beginPath(); g3.moveTo(proj[a][0], proj[a][1]); g3.lineTo(proj[b][0], proj[b][1]); g3.stroke();
+  }
+  g3.setLineDash([]);
+
+  const order = [];
+  for (let i = 0; i < N; i++) if (on[D.nodeStatus[i]] && inDrill(i)) order.push(i);
+  order.sort((i, j) => proj[j][2] - proj[i][2]);
+  for (const i of order) {
+    const st = D.nodeStatus[i], [x, y, z, f] = proj[i];
+    const match = term && D.labels[i].toLowerCase().includes(term);
+    const r = ((st === S_SHARED ? 2.6 : 4.2) * f * zoom3) + (match ? 3 : 0);
+    g3.globalAlpha = cue(z);
+    path(g3, D.shapes[st], x, y, r);
+    g3.fillStyle = T.series[st]; g3.fill();
+    if (i === hover3 || match) { g3.lineWidth = 2; g3.strokeStyle = T.ink; g3.globalAlpha = 1; g3.stroke(); }
+  }
+  g3.globalAlpha = 1;
+  if (hover3 >= 0 && inDrill(hover3)) {
+    const [x, y] = proj[hover3];
+    g3.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    g3.lineWidth = 3; g3.strokeStyle = T.surface; g3.strokeText(D.labels[hover3], x + 9, y + 4);
+    g3.fillStyle = T.ink; g3.fillText(D.labels[hover3], x + 9, y + 4);
+  }
+}
+
+function pick3(px, py) {
+  if (!proj) return -1;
+  let best = -1, bd = 121;
+  for (let i = 0; i < N; i++) {
+    if (!on[D.nodeStatus[i]]) continue;
+    const dx = proj[i][0] - px, dy = proj[i][1] - py, d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
+function startSpin() {
+  if (spinHandle) return;
+  let last = performance.now();
+  const step = now => {
+    if (!spin || vw !== 'three') { spinHandle = null; return; }
+    yaw += (now - last) * .00035; last = now;
+    paint3D(); spinHandle = requestAnimationFrame(step);
+  };
+  spinHandle = requestAnimationFrame(step);
+}
+const spinBtn = document.getElementById('spin');
+spinBtn.addEventListener('click', () => {
+  spin = !spin; spinBtn.setAttribute('aria-pressed', String(spin));
+  if (spin) startSpin();
+});
+document.getElementById('threeReset').addEventListener('click', () => {
+  yaw = .6; pitch = .35; zoom3 = 1; paint3D();
+});
+let drag3 = null;
+c3.addEventListener('mousedown', e => { drag3 = {x: e.offsetX, y: e.offsetY, yaw, pitch}; });
+window.addEventListener('mouseup', () => { drag3 = null; });
+c3.addEventListener('mousemove', e => {
+  if (drag3) {
+    yaw = drag3.yaw + (e.offsetX - drag3.x) * .008;
+    pitch = Math.max(-1.4, Math.min(1.4, drag3.pitch + (e.offsetY - drag3.y) * .008));
+    paint3D(); return;
+  }
+  const i = pick3(e.offsetX, e.offsetY);
+  if (i !== hover3) { hover3 = i; paint3D(); }
+  if (i >= 0) {
+    tip3.innerHTML = '<b>' + esc(D.labels[i]) + '</b><br>' + D.statusLabels[D.nodeStatus[i]];
+    tip3.style.left = Math.min(e.offsetX + 16, c3.clientWidth - 220) + 'px';
+    tip3.style.top = (e.offsetY + 16 + 42) + 'px';
+    tip3.style.opacity = 1;
+  } else tip3.style.opacity = 0;
+});
+c3.addEventListener('mouseleave', () => { hover3 = -1; tip3.style.opacity = 0; paint3D(); });
+c3.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoom3 = Math.max(.4, Math.min(6, zoom3 * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  paint3D();
+}, {passive: false});
+
 // ---- clusters -----------------------------------------------------------
 const rampOf = d => D.ramp[mode][Math.min(D.ramp[mode].length - 1,
   Math.round((d / maxDensity) * (D.ramp[mode].length - 1)))];
 const rampIdx = d => Math.min(D.ramp[mode].length - 1,
   Math.round((d / maxDensity) * (D.ramp[mode].length - 1)));
-const clRadius = c => 9 + Math.sqrt(c.size) * 4.5;
-const clX = (c, w, h) => c.x * (Math.min(w, h) - 130) * cview.k + cview.x + 65;
-const clY = (c, w, h) => c.y * (Math.min(w, h) - 130) * cview.k + cview.y + 65;
+// Bubble radius follows sqrt(size) so area tracks membership, then a global
+// scale keeps the whole set inside the canvas when there are many big ones.
+let clBase = [], clKey = '', clScale = 1;
+const clRadius = c => (9 + Math.sqrt(c.size) * 4.5) * clScale;
+
+// The force layout places cluster centres well but knows nothing about their
+// radii, so bubbles land on top of each other. Resolve overlaps in pixel space
+// with a few relaxation passes, then keep everything inside the frame.
+function layoutClusters(w, h) {
+  const key = w + 'x' + h;
+  if (clKey === key) return;
+  clKey = key;
+  const area = D.clusters.reduce((s, c) => s + Math.PI * Math.pow(9 + Math.sqrt(c.size) * 4.5, 2), 0);
+  clScale = Math.min(1, Math.sqrt((0.30 * w * h) / Math.max(area, 1)));
+  const s = Math.min(w, h) - 130;
+  const pts = D.clusters.map(c => ({x: c.x * s + 65, y: c.y * s + 65, r: clRadius(c) + 16}));
+  for (let it = 0; it < 120; it++) {
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const a = pts[i], b = pts[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 0.01, min = a.r + b.r;
+        if (d < min) {
+          const push = (min - d) / 2; dx /= d; dy /= d;
+          a.x -= dx * push; a.y -= dy * push; b.x += dx * push; b.y += dy * push;
+        }
+      }
+    }
+    for (const q of pts) {
+      q.x = Math.max(q.r, Math.min(w - q.r, q.x));
+      q.y = Math.max(q.r, Math.min(h - q.r - 26, q.y));
+    }
+  }
+  clBase = pts;
+}
+const clX = (i, w, h) => clBase[i].x * cview.k + cview.x;
+const clY = (i, w, h) => clBase[i].y * cview.k + cview.y;
 
 function paintClusters() {
   const w = cC.clientWidth, h = cC.clientHeight;
   gC.clearRect(0, 0, w, h);
   if (!D.clusters.length) return;
+  layoutClusters(w, h);
 
   // One encoding for the whole view: violet means "share of this that changed",
   // for links as much as for clusters. Reusing the categorical CHANGED hue here
   // would claim these links are reweighted edges, which they are not.
   for (const [i, j, total, changed] of D.clusterLinks) {
-    const a = D.clusters[i], b = D.clusters[j];
     gC.strokeStyle = rampOf(total ? changed / total : 0);
     gC.globalAlpha = .8;
     gC.lineWidth = Math.min(7, .6 + Math.log2(1 + total) * .8);
     gC.beginPath();
-    gC.moveTo(clX(a, w, h), clY(a, w, h)); gC.lineTo(clX(b, w, h), clY(b, w, h));
+    gC.moveTo(clX(i, w, h), clY(i, w, h)); gC.lineTo(clX(j, w, h), clY(j, w, h));
     gC.stroke();
   }
   gC.globalAlpha = 1;
 
   D.clusters.forEach((c, i) => {
-    const x = clX(c, w, h), y = clY(c, w, h), r = clRadius(c) * Math.min(1.6, cview.k);
+    const x = clX(i, w, h), y = clY(i, w, h), r = clRadius(c) * Math.min(1.6, cview.k);
     gC.beginPath(); gC.arc(x, y, r, 0, 6.2832);
     gC.fillStyle = rampOf(c.d); gC.fill();
     gC.lineWidth = i === hoverCl ? 2.5 : 1;
@@ -895,7 +1099,7 @@ function paintClusters() {
     // Ink on the pale end of the ramp, surface on the dark end.
     gC.fillStyle = rampIdx(c.d) >= 3 ? T.surface : T.ink;
     gC.textAlign = 'center';
-    gC.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    gC.font = '600 ' + Math.max(9, Math.min(13, r * .42)) + 'px ui-sans-serif, system-ui, sans-serif';
     gC.fillText((c.d * 100).toFixed(0) + '%', x, y + 4);
     gC.fillStyle = T.ink;
     gC.font = '11px ui-sans-serif, system-ui, sans-serif';
@@ -916,9 +1120,10 @@ function paintClusters() {
 
 function pickCluster(px, py) {
   const w = cC.clientWidth, h = cC.clientHeight;
+  layoutClusters(w, h);
   for (let i = D.clusters.length - 1; i >= 0; i--) {
     const c = D.clusters[i];
-    const dx = clX(c, w, h) - px, dy = clY(c, w, h) - py;
+    const dx = clX(i, w, h) - px, dy = clY(i, w, h) - py;
     const r = clRadius(c) * Math.min(1.6, cview.k);
     if (dx * dx + dy * dy <= r * r) return i;
   }
@@ -959,6 +1164,7 @@ function setDrill(i) {
 
 function paintAll() {
   if (vw === 'clusters') { paintClusters(); }
+  if (vw === 'three') { paint3D(); if (spin) startSpin(); }
   if (vw === 'overview') {
     paint(gO, cO, {interactive: true});
     document.getElementById('hud').innerHTML =
@@ -1182,7 +1388,7 @@ function fit(cv) {
   cv.height = Math.round(cv.clientHeight * dpr);
   cv.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-function resize() { [cO, cA, cB, cC].forEach(fit); paintAll(); }
+function resize() { [cO, cA, cB, cC, c3].forEach(fit); paintAll(); }
 
 cC.addEventListener('mousemove', e => {
   const i = pickCluster(e.offsetX, e.offsetY);
@@ -1213,6 +1419,9 @@ const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-schem
 setTheme(prefersDark ? 'dark' : 'light');
 window.addEventListener('resize', resize);
 resize();
+if (D.meta.initialView && D.meta.initialView !== 'overview') {
+  document.querySelector(`#tabs button[data-v="${D.meta.initialView}"]`).click();
+}
 </script>
 </body>
 </html>

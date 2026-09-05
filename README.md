@@ -119,18 +119,38 @@ a, b = example_pair()   # two snapshots of a named-entity knowledge graph
 
 52 and 53 nodes of people, organizations and topics with community structure,
 differing by departed and arrived entities, rewired relationships and drifted
-edge weights — every status is represented.
+edge weights — every status is represented. Small enough to read whole.
+
+```python
+from graphdiff.data import large_example_pair
+
+a, b = large_example_pair()   # ~3,000 nodes, ~10,000 edges, 28 communities
+```
+
+A stochastic block model where the change is concentrated in three of the 28
+communities plus a light scatter of noise — the shape real drift usually has,
+and the case the Clusters view exists for. Use this one to judge the viewer; the
+small pair fits in the Overview and makes every other view look redundant.
 
 ## CLI
 
-*Not yet implemented.* Planned surface:
-
 ```bash
-graphdiff compare A.graphml B.graphml --out report.json [--markdown summary.md]
-graphdiff matrix ./graphs/ --metric jaccard_edges --out scores.parquet --workers 8
-graphdiff inspect A.graphml
-graphdiff serve report.json --port 8080
+graphdiff inspect A.graphml                       # counts, types, density, degree stats
+graphdiff compare A.graphml B.graphml             # markdown summary to stdout
+graphdiff compare A.graphml B.graphml --out report.json --markdown summary.md \
+                                      --parquet scores.parquet --html diff.html --union-dir union/
+graphdiff matrix ./graphs/ --metric jaccard_typed_edges --metric ged_similarity \
+                           --out scores.parquet --workers 8
+graphdiff render A.graphml B.graphml --out diff.html [--cluster-by kind]
+graphdiff serve diff.html --port 8080             # localhost only; nothing outbound
 ```
+
+`matrix` scores every pair in a directory over a `multiprocessing` pool, with
+progress on stderr, into the same tidy long format `compare --parquet` writes
+(`graph_a, graph_b, metric, raw_score, shared_subgraph_score`). Each worker
+caches the graphs it has loaded. `serve` is a stdlib HTTP server bound to
+`127.0.0.1` serving a file that was already rendered with no external
+references — it exists so a colleague can open the diff without a file share.
 
 ## Visual diff
 
@@ -169,10 +189,12 @@ relationships. **Differences only** hides the shared scaffolding. Search by
 label, toggle any status, click a row of the most-changed table to fly to that
 node, `Esc` to clear. The theme follows your OS and has a manual toggle.
 
-### Four views
+### Five views
 
-The page opens on **Overview** — the whole union graph — but that view answers
-"how much changed", not "where". Three more views answer *where*:
+The page opens on **Overview** for small graphs and on **Clusters** for anything
+past a few hundred nodes, because at that size the overview is a hairball and
+the aggregate view is the honest place to start. Overview answers "how much
+changed"; the others answer *where*:
 
 **Clusters** is the one that scales. The union is partitioned (Louvain by
 default, or by any node attribute you name), and each partition is drawn as one
@@ -201,6 +223,12 @@ them, so anything that appears or vanishes is unmissable. A slider crossfades A
 into B; **Flicker** alternates them automatically, which turns the diff into
 motion — a far stronger perceptual channel than colour. **Split** puts them side
 by side with linked pan and zoom.
+
+**3D** is a presentation mode: a separate three-dimensional force layout
+(depth is real, not a random z), drawn with a plain perspective projection onto
+the canvas — no WebGL, no library, nothing to bundle — with depth cueing,
+drag-to-rotate, and auto-rotate. It reads well in a room. The analysis views stay
+flat on purpose; rotation costs accuracy at a desk.
 
 ```python
 write_html(report, "diff.html", max_cards=60, max_card_neighbors=30)

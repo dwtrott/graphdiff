@@ -337,3 +337,37 @@ class TestViews:
         a, b = example_pair()
         html = render_html(build_union_diff_graph(a, b))
         assert '"egos":[]' in html
+
+
+class TestThreeD:
+    def test_layout_returns_three_columns(self) -> None:
+        edges = np.array([[0, 1], [1, 2], [2, 0]])
+        pos = force_directed_layout(3, edges, dims=3, params=LayoutParams(iterations=40))
+        assert pos.shape == (3, 3)
+        assert pos.min() >= 0.0 and pos.max() <= 1.0
+
+    def test_rejects_other_dims(self) -> None:
+        with pytest.raises(ValueError, match="dims"):
+            force_directed_layout(3, np.zeros((0, 2)), dims=4)
+
+    def test_components_separate_in_three_dimensions(self) -> None:
+        edges = np.array([[0, 1], [1, 2], [2, 0], [3, 4], [4, 5], [5, 3]])
+        pos = force_directed_layout(6, edges, dims=3, params=LayoutParams(seed=2))
+        within = np.linalg.norm(pos[0] - pos[1])
+        across = np.linalg.norm(pos[:3].mean(axis=0) - pos[3:].mean(axis=0))
+        assert within < across
+
+    def test_page_carries_3d_coordinates_and_tab(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        html = render_html(demo_report)
+        assert '"p3":' in html
+        assert 'data-v="three"' in html
+
+    def test_large_graph_opens_on_clusters(self) -> None:
+        from graphdiff.data import large_example_pair
+
+        a, b = large_example_pair(n_communities=6, community_size=80)
+        html = render_html(gd.compare(a, b), max_nodes=300)
+        assert '"initialView":"clusters"' in html
+
+    def test_small_graph_opens_on_overview(self, demo_report) -> None:  # type: ignore[no-untyped-def]
+        assert '"initialView":"overview"' in render_html(demo_report)

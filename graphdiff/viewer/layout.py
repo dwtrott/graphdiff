@@ -45,23 +45,33 @@ class LayoutParams:
 
 
 def _grid_repulsion(pos: np.ndarray, k: float, grid: int, span: float) -> np.ndarray:
-    """Repulsive displacement, approximating distant nodes by cell centroids."""
+    """Repulsive displacement, approximating distant nodes by cell centroids.
+
+    Works in any number of dimensions: cells are the product of per-axis bins,
+    so a 3D layout with ``grid=12`` uses 1728 cells where 2D with ``grid=24``
+    uses 576 — comparable cost, and the approximation quality is the same.
+    """
+    dims = pos.shape[1]
     lo = pos.min(axis=0)
     extent = np.maximum(pos.max(axis=0) - lo, 1e-9)
-    cell = np.clip(((pos - lo) / extent * (grid - 1)).astype(np.int32), 0, grid - 1)
-    flat = cell[:, 0] * grid + cell[:, 1]
+    cell = np.clip(((pos - lo) / extent * (grid - 1)).astype(np.int64), 0, grid - 1)
+    flat = np.zeros(pos.shape[0], dtype=np.int64)
+    for axis in range(dims):
+        flat = flat * grid + cell[:, axis]
+    n_cells = grid**dims
 
-    counts = np.bincount(flat, minlength=grid * grid).astype(np.float64)
-    sum_x = np.bincount(flat, weights=pos[:, 0], minlength=grid * grid)
-    sum_y = np.bincount(flat, weights=pos[:, 1], minlength=grid * grid)
+    counts = np.bincount(flat, minlength=n_cells).astype(np.float64)
+    sums = np.stack(
+        [np.bincount(flat, weights=pos[:, axis], minlength=n_cells) for axis in range(dims)],
+        axis=1,
+    )
 
     occupied = counts > 0
     if not occupied.any():  # pragma: no cover - defensive
         return np.zeros_like(pos)
     weights = counts[occupied]
-    centroids = np.stack([sum_x[occupied] / weights, sum_y[occupied] / weights], axis=1)
+    centroids = sums[occupied] / weights[:, None]
 
-    # (n, cells, 2) would blow memory at scale; accumulate per cell instead.
     disp = np.zeros_like(pos)
     for i in range(centroids.shape[0]):
         delta = pos - centroids[i]
@@ -83,8 +93,9 @@ def force_directed_layout(
     edges: np.ndarray,
     *,
     params: LayoutParams | None = None,
+    dims: int = 2,
 ) -> np.ndarray:
-    """Lay out a graph in 2D and return coordinates normalized to ``[0, 1]``.
+    """Lay out a graph in 2D or 3D and return coordinates normalized to ``[0, 1]``.
 
     Parameters
     ----------
@@ -95,11 +106,15 @@ def force_directed_layout(
         irrelevant to the layout.
     params:
         Tuning; see :class:`LayoutParams`.
+    dims:
+        ``2`` for the flat views, ``3`` for the rotating view. In 3D the
+        repulsion grid is coarsened to ``grid // 2`` per axis so the cell count
+        stays in the same range.
 
     Returns
     -------
     numpy.ndarray
-        Array of shape ``(n_nodes, 2)``, each coordinate in ``[0, 1]``.
+        Array of shape ``(n_nodes, dims)``, each coordinate in ``[0, 1]``.
 
     Notes
     -----
@@ -108,13 +123,16 @@ def force_directed_layout(
     reshuffling underneath you.
     """
     cfg = params or LayoutParams()
+    if dims not in (2, 3):
+        raise ValueError(f"dims must be 2 or 3, got {dims}")
     if n_nodes == 0:
-        return np.zeros((0, 2), dtype=np.float64)
+        return np.zeros((0, dims), dtype=np.float64)
     if n_nodes == 1:
-        return np.array([[0.5, 0.5]], dtype=np.float64)
+        return np.full((1, dims), 0.5, dtype=np.float64)
 
     rng = np.random.default_rng(cfg.seed)
-    pos = rng.uniform(-1.0, 1.0, size=(n_nodes, 2))
+    pos = rng.uniform(-1.0, 1.0, size=(n_nodes, dims))
+    grid = cfg.grid if dims == 2 else max(6, cfg.grid // 2)
 
     edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
     if len(edges):
@@ -127,11 +145,11 @@ def force_directed_layout(
         )
         edges = edges[valid]
 
-    k = np.sqrt(1.0 / n_nodes)
+    k = (1.0 / n_nodes) ** (1.0 / dims)
     temperature = cfg.initial_temperature
 
     for _ in range(cfg.iterations):
-        disp = _grid_repulsion(pos, k, cfg.grid, span=10.0)
+        disp = _grid_repulsion(pos, k, grid, span=10.0)
 
         if len(edges):
             src, dst = edges[:, 0], edges[:, 1]
