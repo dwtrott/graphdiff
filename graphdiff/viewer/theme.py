@@ -27,7 +27,7 @@ from typing import Final
 
 from .._types import STATUS_ORDER
 
-__all__ = ["DARK", "LIGHT", "SHAPES", "STATUS_COLORS", "status_labels"]
+__all__ = ["CHANGE_RAMP", "DARK", "LIGHT", "SHAPES", "STATUS_COLORS", "status_labels"]
 
 #: Node silhouette per status, in :data:`~graphdiff._types.STATUS_ORDER`.
 #: Circle reads as "unremarkable"; the three difference shapes are distinct at
@@ -82,3 +82,14 @@ def status_labels(name_a: str, name_b: str) -> dict[str, str]:
         "A_ONLY": f"Only in {name_a}",
         "B_ONLY": f"Only in {name_b}",
     }
+
+
+#: Sequential ramp for cluster change density — a *magnitude*, so one hue from
+#: light to dark rather than a categorical set. Violet is deliberately outside
+#: the categorical blue/orange/green so an aggregate mark is never mistaken for
+#: a status. Both ramps are monotonic in OKLab lightness (light 0.94 → 0.38,
+#: dark 0.29 → 0.74) and span contrast 1.2:1 to 10:1 against their surface.
+CHANGE_RAMP: Final[dict[str, list[str]]] = {
+    "light": ["#ece9f5", "#d0c8e8", "#ab9dd6", "#8474bf", "#5f4ea4", "#3f327f"],
+    "dark": ["#2b2a36", "#3f3a58", "#57507f", "#7166a7", "#8d81cd", "#ab9ff0"],
+}

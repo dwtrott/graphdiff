@@ -18,14 +18,16 @@ import pandas as pd
 from .._types import CHANGED_ATTRS, ETYPE, LABEL, SOURCE, STATUS, STATUS_ORDER, TARGET
 from ..core.union import UnionDiffGraph
 from ..report.report import ComparisonReport
+from .cluster import cluster_union
 from .ego import ego_networks
 from .focus import select_focus
 from .layout import LayoutParams, force_directed_layout
-from .theme import DARK, LIGHT, SHAPES, STATUS_COLORS, status_labels
+from .theme import CHANGE_RAMP, DARK, LIGHT, SHAPES, STATUS_COLORS, status_labels
 
 __all__ = ["STATUS_COLORS", "render_html", "write_html"]
 
 _STATUS_INDEX = {name: i for i, name in enumerate(STATUS_ORDER)}
+_DIFFERING_KEYS = ("A_ONLY", "B_ONLY", "CHANGED")
 
 
 def _changed_summary(value: Any) -> str:
@@ -50,6 +52,8 @@ def _build_payload(
     layout: LayoutParams,
     max_cards: int,
     max_card_neighbors: int,
+    cluster_by: str | None,
+    max_clusters: int,
 ) -> dict[str, Any]:
     focus = select_focus(union, max_nodes=max_nodes, context_hops=context_hops)
     labels = focus.labels
@@ -132,6 +136,36 @@ def _build_payload(
                 }
             )
 
+    # ---- aggregate view: one mark per cluster, shaded by change density ----
+    cmap = cluster_union(union, attribute=cluster_by, max_clusters=max_clusters)
+    cluster_index = {c.key: i for i, c in enumerate(cmap.clusters)}
+    cl_edges = (
+        np.array([[i, j] for i, j, _ in cmap.links], dtype=np.int64)
+        if cmap.links
+        else np.zeros((0, 2), dtype=np.int64)
+    )
+    cl_coords = force_directed_layout(len(cmap.clusters), cl_edges, params=layout)
+    clusters = [
+        {
+            "k": c.key,
+            "name": c.name,
+            "size": c.size,
+            "nc": c.node_counts,
+            "ec": c.edge_counts,
+            "d": round(c.change_density, 5),
+            "x": round(float(cl_coords[i, 0]), 5),
+            "y": round(float(cl_coords[i, 1]), 5),
+        }
+        for i, c in enumerate(cmap.clusters)
+    ]
+    cluster_links = [
+        [i, j, int(sum(counts.values())), int(sum(counts[s] for s in _DIFFERING_KEYS))]
+        for i, j, counts in cmap.links
+    ]
+    node_cluster = (
+        cmap.membership.reindex(labels).map(cluster_index).fillna(-1).astype(int).tolist()
+    )
+
     node_counts = union.node_status_counts()
     edge_counts = union.edge_status_counts()
 
@@ -168,6 +202,11 @@ def _build_payload(
         "metrics": metrics,
         "topChanged": top_changed,
         "egos": egos,
+        "clusters": clusters,
+        "clusterLinks": cluster_links,
+        "nodeCluster": node_cluster,
+        "clusterMethod": cmap.method,
+        "ramp": CHANGE_RAMP,
     }
 
 
@@ -187,6 +226,8 @@ def render_html(
     title: str | None = None,
     max_cards: int = 40,
     max_card_neighbors: int = 24,
+    cluster_by: str | None = None,
+    max_clusters: int = 60,
 ) -> str:
     """Render a comparison to a self-contained HTML document.
 
@@ -208,6 +249,11 @@ def render_html(
         How many ego-network cards the Changes view holds, in most-changed order.
     max_card_neighbors:
         Neighbour cap per card; differences are kept ahead of unchanged ones.
+    cluster_by:
+        Node attribute to aggregate by in the Clusters view. ``None`` detects
+        communities instead.
+    max_clusters:
+        Cluster cap; the long tail folds into a single ``"(other)"`` mark.
 
     Returns
     -------
@@ -239,6 +285,8 @@ def render_html(
         layout=layout or LayoutParams(),
         max_cards=max_cards,
         max_card_neighbors=max_card_neighbors,
+        cluster_by=cluster_by,
+        max_clusters=max_clusters,
     )
     doc_title = title or f"graphdiff: {union.name_a} vs {union.name_b}"
     data = json.dumps(payload, separators=(",", ":"), allow_nan=False).replace("</", "<\\/")
@@ -423,12 +471,34 @@ _TEMPLATE = """<!DOCTYPE html>
     padding: 5px 10px; opacity: .93;
   }
   #hud b { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  #drill {
+    position: absolute; left: 14px; top: 14px; font-size: 11px; display: none;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 6px 5px 10px; align-items: center; gap: 8px; color: var(--ink-2);
+  }
+  #drill.on { display: flex; }
+  #drill button { padding: 2px 8px; font-size: 11px; }
+  #rampLegend {
+    position: absolute; left: 14px; bottom: 14px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
+    font-size: 10px; color: var(--ink-3);
+  }
+  #rampLegend .bar { display: flex; margin: 4px 0 3px; }
+  #rampLegend .bar i { width: 22px; height: 9px; display: block; }
+  #rampLegend .ends { display: flex; justify-content: space-between;
+                      font-variant-numeric: tabular-nums; }
+  #clusterHint {
+    position: absolute; right: 14px; bottom: 14px; font-size: 11px; color: var(--ink-3);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 10px;
+  }
 </style>
 </head>
 <body>
 <div id="stage">
   <nav id="tabs">
     <button data-v="overview" class="on">Overview</button>
+    <button data-v="clusters">Clusters</button>
     <button data-v="cards">Changes</button>
     <button data-v="compare">Compare</button>
     <span id="tabnote"></span>
@@ -436,8 +506,15 @@ _TEMPLATE = """<!DOCTYPE html>
 
   <section id="pane-overview" class="pane on">
     <canvas id="cO"></canvas>
+    <div id="drill"></div>
     <div id="hud"></div>
     <div id="tip"></div>
+  </section>
+
+  <section id="pane-clusters" class="pane">
+    <canvas id="cC"></canvas>
+    <div id="rampLegend"></div>
+    <div id="clusterHint"></div>
   </section>
 
   <section id="pane-cards" class="pane">
@@ -518,6 +595,9 @@ const q = document.getElementById('q'), hits = document.getElementById('hits');
 const on = D.statuses.map(() => true);
 let T = D.themes.light, mode = 'light', vw = 'overview';
 let view = {k: 1, x: 0, y: 0}, hover = -1, sel = -1, blend = .5, split = false;
+let drill = -1, hoverCl = -1, cview = {k: 1, x: 0, y: 0};
+const cC = document.getElementById('cC'), gC = cC.getContext('2d');
+const maxDensity = Math.max(1e-9, ...D.clusters.map(c => c.d));
 
 const inc = Array.from({length: N}, () => []);
 D.edges.forEach(([a, b], i) => { inc[a].push(i); inc[b].push(i); });
@@ -729,8 +809,10 @@ function paint(g, cv, opts) {
   }
   const dimming = focusNode >= 0;
 
+  const inDrill = i => drill < 0 || D.nodeCluster[i] === drill;
   for (const [a, b, st] of D.edges) {
     if (!on[st] || alpha[st] <= 0.01) continue;
+    if (!inDrill(a) || !inDrill(b)) continue;
     const lit = !dimming || (near.has(a) && near.has(b));
     const shared = st === S_SHARED;
     g.strokeStyle = T.series[st];
@@ -748,7 +830,7 @@ function paint(g, cv, opts) {
     (i, j) => (D.nodeStatus[i] === S_SHARED ? 0 : 1) - (D.nodeStatus[j] === S_SHARED ? 0 : 1));
   for (const i of order) {
     const st = D.nodeStatus[i];
-    if (!on[st] || alpha[st] <= 0.01) continue;
+    if (!on[st] || alpha[st] <= 0.01 || !inDrill(i)) continue;
     const match = term && D.labels[i].toLowerCase().includes(term);
     const lit = !dimming || near.has(i);
     const r = (st === S_SHARED ? base : base * 1.5) + (match ? 3 : 0);
@@ -766,7 +848,7 @@ function paint(g, cv, opts) {
   const labelled = view.k > 2.4 ? order : (focusNode >= 0 ? [focusNode] : []);
   for (const i of labelled) {
     const st = D.nodeStatus[i];
-    if (!on[st] || alpha[st] <= 0.01) continue;
+    if (!on[st] || alpha[st] <= 0.01 || !inDrill(i)) continue;
     if (dimming && !near.has(i)) continue;
     const x = sxOf(i, w, h) + 9, y = syOf(i, w, h) + 4;
     if (x < -60 || x > w + 60 || y < -20 || y > h + 20) continue;
@@ -775,7 +857,108 @@ function paint(g, cv, opts) {
   }
 }
 
+// ---- clusters -----------------------------------------------------------
+const rampOf = d => D.ramp[mode][Math.min(D.ramp[mode].length - 1,
+  Math.round((d / maxDensity) * (D.ramp[mode].length - 1)))];
+const rampIdx = d => Math.min(D.ramp[mode].length - 1,
+  Math.round((d / maxDensity) * (D.ramp[mode].length - 1)));
+const clRadius = c => 9 + Math.sqrt(c.size) * 4.5;
+const clX = (c, w, h) => c.x * (Math.min(w, h) - 130) * cview.k + cview.x + 65;
+const clY = (c, w, h) => c.y * (Math.min(w, h) - 130) * cview.k + cview.y + 65;
+
+function paintClusters() {
+  const w = cC.clientWidth, h = cC.clientHeight;
+  gC.clearRect(0, 0, w, h);
+  if (!D.clusters.length) return;
+
+  // One encoding for the whole view: violet means "share of this that changed",
+  // for links as much as for clusters. Reusing the categorical CHANGED hue here
+  // would claim these links are reweighted edges, which they are not.
+  for (const [i, j, total, changed] of D.clusterLinks) {
+    const a = D.clusters[i], b = D.clusters[j];
+    gC.strokeStyle = rampOf(total ? changed / total : 0);
+    gC.globalAlpha = .8;
+    gC.lineWidth = Math.min(7, .6 + Math.log2(1 + total) * .8);
+    gC.beginPath();
+    gC.moveTo(clX(a, w, h), clY(a, w, h)); gC.lineTo(clX(b, w, h), clY(b, w, h));
+    gC.stroke();
+  }
+  gC.globalAlpha = 1;
+
+  D.clusters.forEach((c, i) => {
+    const x = clX(c, w, h), y = clY(c, w, h), r = clRadius(c) * Math.min(1.6, cview.k);
+    gC.beginPath(); gC.arc(x, y, r, 0, 6.2832);
+    gC.fillStyle = rampOf(c.d); gC.fill();
+    gC.lineWidth = i === hoverCl ? 2.5 : 1;
+    gC.strokeStyle = i === hoverCl ? T.ink : T.line; gC.stroke();
+
+    // Ink on the pale end of the ramp, surface on the dark end.
+    gC.fillStyle = rampIdx(c.d) >= 3 ? T.surface : T.ink;
+    gC.textAlign = 'center';
+    gC.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+    gC.fillText((c.d * 100).toFixed(0) + '%', x, y + 4);
+    gC.fillStyle = T.ink;
+    gC.font = '11px ui-sans-serif, system-ui, sans-serif';
+    gC.fillText(c.name.length > 22 ? c.name.slice(0, 21) + '…' : c.name, x, y + r + 13);
+    gC.fillStyle = T.inkMuted || T.ink;
+    gC.font = '10px ui-sans-serif, system-ui, sans-serif';
+    gC.fillText(c.size + ' nodes', x, y + r + 25);
+  });
+  gC.textAlign = 'left';
+
+  document.getElementById('rampLegend').innerHTML =
+    '<div>Share of the cluster that changed</div><div class="bar">' +
+    D.ramp[mode].map(c => `<i style="background:${c}"></i>`).join('') +
+    `</div><div class="ends"><span>0%</span><span>${(maxDensity * 100).toFixed(0)}%</span></div>`;
+  document.getElementById('clusterHint').textContent =
+    D.clusters.length + ' clusters · ' + D.clusterMethod + ' · click one to drill in';
+}
+
+function pickCluster(px, py) {
+  const w = cC.clientWidth, h = cC.clientHeight;
+  for (let i = D.clusters.length - 1; i >= 0; i--) {
+    const c = D.clusters[i];
+    const dx = clX(c, w, h) - px, dy = clY(c, w, h) - py;
+    const r = clRadius(c) * Math.min(1.6, cview.k);
+    if (dx * dx + dy * dy <= r * r) return i;
+  }
+  return -1;
+}
+
+// Frame the drilled cluster instead of leaving it wherever it sat in the
+// full-graph layout — nine nodes stranded in a corner is not a drill-down.
+function fitTo(indices) {
+  if (!indices.length) { view = {k: 1, x: 0, y: 0}; return; }
+  let x0 = 1, x1 = 0, y0 = 1, y1 = 0;
+  for (const i of indices) {
+    x0 = Math.min(x0, D.x[i]); x1 = Math.max(x1, D.x[i]);
+    y0 = Math.min(y0, D.y[i]); y1 = Math.max(y1, D.y[i]);
+  }
+  const w = cO.clientWidth, h = cO.clientHeight, sp = spanOf(w, h);
+  const dx = Math.max(x1 - x0, .02), dy = Math.max(y1 - y0, .02);
+  view.k = Math.max(.5, Math.min(20, Math.min((w - 3 * PAD) / (sp * dx),
+                                              (h - 3 * PAD) / (sp * dy))));
+  view.x = w / 2 - ((x0 + x1) / 2) * sp * view.k - PAD;
+  view.y = h / 2 - ((y0 + y1) / 2) * sp * view.k - PAD;
+}
+
+function setDrill(i) {
+  drill = i;
+  const chip = document.getElementById('drill');
+  if (i < 0) { chip.classList.remove('on'); chip.innerHTML = ''; }
+  else {
+    const c = D.clusters[i];
+    chip.classList.add('on');
+    chip.innerHTML = `<span>Cluster <b>${esc(c.name)}</b> · ${c.size} nodes · ` +
+      `${(c.d * 100).toFixed(0)}% changed</span><button id="undrill">Show all</button>`;
+    chip.querySelector('#undrill').addEventListener('click', e => {
+      e.stopPropagation(); setDrill(-1); paintAll();
+    });
+  }
+}
+
 function paintAll() {
+  if (vw === 'clusters') { paintClusters(); }
   if (vw === 'overview') {
     paint(gO, cO, {interactive: true});
     document.getElementById('hud').innerHTML =
@@ -792,9 +975,15 @@ function paintAll() {
       paint(gA, cA, {alpha: a});
     }
   }
-  document.getElementById('tabnote').textContent =
-    D.meta.drawnNodes.toLocaleString() + ' of ' + D.meta.totalNodes.toLocaleString() +
-    ' nodes drawn' + (D.meta.truncated ? ' · differences prioritized' : '');
+  const note = document.getElementById('tabnote');
+  if (drill >= 0 && vw === 'overview') {
+    note.textContent = D.clusters[drill].size.toLocaleString() + ' nodes in cluster ' +
+      D.clusters[drill].name;
+  } else {
+    note.textContent = D.meta.drawnNodes.toLocaleString() + ' of ' +
+      D.meta.totalNodes.toLocaleString() + ' nodes drawn' +
+      (D.meta.truncated ? ' · differences prioritized' : '');
+  }
 }
 
 // ---- selection ----------------------------------------------------------
@@ -877,8 +1066,8 @@ diffBtn.addEventListener('click', () => {
   paintAll();
 });
 document.getElementById('reset').addEventListener('click', () => {
-  view = {k: 1, x: 0, y: 0}; q.value = ''; hits.innerHTML = '';
-  sel = -1; showCard(-1); paintAll();
+  view = {k: 1, x: 0, y: 0}; cview = {k: 1, x: 0, y: 0}; q.value = ''; hits.innerHTML = '';
+  sel = -1; showCard(-1); setDrill(-1); paintAll();
 });
 const themeBtn = document.getElementById('theme');
 themeBtn.addEventListener('click', () => setTheme(mode === 'light' ? 'dark' : 'light'));
@@ -993,7 +1182,32 @@ function fit(cv) {
   cv.height = Math.round(cv.clientHeight * dpr);
   cv.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-function resize() { [cO, cA, cB].forEach(fit); paintAll(); }
+function resize() { [cO, cA, cB, cC].forEach(fit); paintAll(); }
+
+cC.addEventListener('mousemove', e => {
+  const i = pickCluster(e.offsetX, e.offsetY);
+  if (i !== hoverCl) { hoverCl = i; cC.style.cursor = i >= 0 ? 'pointer' : 'default'; paintClusters(); }
+});
+cC.addEventListener('mouseleave', () => { hoverCl = -1; paintClusters(); });
+cC.addEventListener('click', e => {
+  const i = pickCluster(e.offsetX, e.offsetY);
+  if (i < 0) return;
+  setDrill(i);
+  sel = -1; showCard(-1);
+  document.querySelector('#tabs button[data-v="overview"]').click();
+  const members = [];
+  for (let n = 0; n < N; n++) if (D.nodeCluster[n] === i) members.push(n);
+  fitTo(members);
+  paintAll();
+});
+cC.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  const nk = Math.max(.5, Math.min(8, cview.k * f)), ratio = nk / cview.k;
+  cview.x = e.offsetX - (e.offsetX - cview.x) * ratio;
+  cview.y = e.offsetY - (e.offsetY - cview.y) * ratio;
+  cview.k = nk; paintClusters();
+}, {passive: false});
 
 const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 setTheme(prefersDark ? 'dark' : 'light');

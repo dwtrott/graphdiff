@@ -169,12 +169,26 @@ relationships. **Differences only** hides the shared scaffolding. Search by
 label, toggle any status, click a row of the most-changed table to fly to that
 node, `Esc` to clear. The theme follows your OS and has a manual toggle.
 
-### Three views
+### Four views
 
 The page opens on **Overview** — the whole union graph — but that view answers
-"how much changed", not "where". Two more views answer *where*:
+"how much changed", not "where". Three more views answer *where*:
 
-**Changes** is the one to use first. One small card per most-changed node, in the
+**Clusters** is the one that scales. The union is partitioned (Louvain by
+default, or by any node attribute you name), and each partition is drawn as one
+mark sized by membership and shaded by **change density** — the share of its own
+nodes and internal edges that differ. A million nodes becomes twenty blobs, the
+dark ones are where the change is, and clicking one drills the Overview down to
+just that cluster. The shading is a sequential violet ramp, deliberately outside
+the categorical blue/orange/green so an aggregate mark is never misread as a
+status.
+
+```python
+write_html(report, "diff.html", cluster_by="kind")   # partition by an attribute
+```
+
+
+**Changes** is the one to use when you already know roughly where to look. One small card per most-changed node, in the
 same rank order as the analysis, each showing that node's neighbourhood.
 Neighbours sit in fixed angular sectors — *removed left, added right, reweighted
 below, unchanged above* — so the same kind of change lands in the same place on

@@ -11,21 +11,26 @@ greyscale printing and colour-vision deficiency. See :mod:`graphdiff.viewer.them
 
 from __future__ import annotations
 
+from .cluster import Cluster, ClusterMap, cluster_union
 from .ego import EgoNeighbor, EgoNetwork, ego_networks
 from .focus import FocusSelection, select_focus
 from .html import render_html, write_html
 from .layout import LayoutParams, force_directed_layout
-from .theme import DARK, LIGHT, SHAPES, STATUS_COLORS, status_labels
+from .theme import CHANGE_RAMP, DARK, LIGHT, SHAPES, STATUS_COLORS, status_labels
 
 __all__ = [
+    "CHANGE_RAMP",
     "DARK",
     "LIGHT",
     "SHAPES",
     "STATUS_COLORS",
+    "Cluster",
+    "ClusterMap",
     "EgoNeighbor",
     "EgoNetwork",
     "FocusSelection",
     "LayoutParams",
+    "cluster_union",
     "ego_networks",
     "force_directed_layout",
     "render_html",
