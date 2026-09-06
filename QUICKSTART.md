@@ -13,9 +13,27 @@ your own machine; nothing is downloaded after the install.
 | your own graphs | any folder; point `graphdiff app --workspace <folder>` at it, or drop files onto the page |
 | results | inside the workspace, under `.graphdiff/jobs/<id>/` — viewer page, JSON, markdown, PNG |
 
-## 1. Install (once)
+## 1. The no-terminal way (Windows)
 
-You need **Python 3.11 or newer**. Check with `python --version` (on Windows,
+Double-click **`run-graphdiff.bat`** in this folder. The first time it finds a
+Python 3.11+ on your machine — a python.org install, or **Anaconda /
+Miniconda** — builds a private environment in `.venv` next to it and installs
+graphdiff (a few minutes, one time). Every time after that it just starts the
+app on the demo datasets and opens your browser. Close the window to stop.
+
+To run it on your own folder of graphs, drag the folder onto the `.bat`, or in
+a terminal: `run-graphdiff.bat C:\path\to\graphs`. macOS/Linux/Git Bash:
+`./run-graphdiff.sh`.
+
+If the window ends with a red `[!]` line, screenshot it and send it to me —
+that is the fastest way to get unstuck. The rest of this section is the same
+setup done by hand.
+
+## 1b. Install by hand
+
+You need **Python 3.11 or newer**. On an **Anaconda** machine, do this from
+an *Anaconda Prompt* (Start menu), and use `conda create -p .venv python=3.11 pip`
+then `conda activate .\.venv` in place of the `venv`/activate lines below. Check with `python --version` (on Windows,
 `py --version` also works). If it is older or missing, install from
 https://www.python.org/downloads/ and tick *Add python.exe to PATH*.
 
