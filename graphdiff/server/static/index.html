@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>graphdiff</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --panel: #f4f4f2; --line: #e0e0dc;
+    --ink: #0b0b0b; --ink-2: #52514e; --ink-3: #7b7a75; --hover: rgba(0,0,0,.05);
+    --a: #2a78d6; --b: #eb6834; --chg: #199e70; --shared: #a8afb8;
+    --danger: #b3261e;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --panel: #232322; --line: #373735;
+    --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #8d8c84; --hover: rgba(255,255,255,.07);
+    --a: #3987e5; --b: #d95926; --shared: #6b7079; --danger: #ff6b61;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--ink); background: var(--surface); display: grid;
+    grid-template-columns: 340px 1fr; grid-template-rows: 100%; overflow: hidden; }
+  body.collapsed { grid-template-columns: 1fr; }
+  body.collapsed aside { display: none; }
+  #sidebar { border-radius: 6px; padding: 2px 8px; }
+  header a.open { color: var(--ink-3); font-size: 12px; text-decoration: none; white-space: nowrap; }
+  header a.open:hover { color: var(--ink); text-decoration: underline; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); overflow: auto;
+    display: flex; flex-direction: column; }
+  main { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; }
+  h1 { font-size: 15px; font-weight: 650; margin: 0; display: flex; align-items: baseline; gap: 8px; }
+  h1 small { color: var(--ink-3); font-weight: 500; font-size: 11px; }
+  h2 { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+    margin: 0 0 8px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  .pad { padding: 14px 16px; }
+  .divide { border-bottom: 1px solid var(--line); }
+  button, select, input[type=text], input[type=number] { font: inherit; color: var(--ink); }
+  button { border: 1px solid var(--line); background: var(--surface); border-radius: 7px;
+    padding: 5px 11px; cursor: pointer; }
+  button:hover { background: var(--hover); }
+  button.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); font-weight: 600;
+    padding: 8px 14px; width: 100%; }
+  button.primary:disabled { opacity: .45; cursor: default; }
+  button.small { padding: 2px 8px; font-size: 11px; }
+  button.danger { color: var(--danger); }
+  select, input[type=text], input[type=number] { width: 100%; border: 1px solid var(--line);
+    background: var(--surface); border-radius: 7px; padding: 6px 8px; }
+  label.f { display: block; margin-bottom: 9px; }
+  label.f > span { display: block; font-size: 11px; color: var(--ink-3); margin-bottom: 3px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1 1 0; }
+  .check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); margin: 6px 0; }
+  .check input { margin: 0; accent-color: var(--ink-2); }
+  details summary { cursor: pointer; color: var(--ink-3); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .06em; font-weight: 600; margin: 4px 0 8px; }
+  /* graphs list */
+  #drop { border: 1.5px dashed var(--line); border-radius: 8px; padding: 10px; text-align: center;
+    color: var(--ink-3); font-size: 12px; cursor: pointer; margin-bottom: 8px; }
+  #drop.over { border-color: var(--ink); color: var(--ink); background: var(--hover); }
+  .g { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 12px; }
+  .g:hover { background: var(--hover); }
+  .g .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .g .sz { color: var(--ink-3); font-size: 11px; flex: 0 0 auto; }
+  .g .del { visibility: hidden; }
+  .g:hover .del { visibility: visible; }
+  .g .pick { display: inline-flex; gap: 2px; }
+  .g .pick b { width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--line); display: grid;
+    place-items: center; font-size: 10px; cursor: pointer; color: var(--ink-3); }
+  .g .pick b.on-a { background: var(--a); color: #fff; border-color: var(--a); }
+  .g .pick b.on-b { background: var(--b); color: #fff; border-color: var(--b); }
+  .g .pick b.on-t { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+  /* jobs list */
+  .j { padding: 7px 8px; border-radius: 7px; cursor: pointer; display: grid; gap: 2px; }
+  .j:hover { background: var(--hover); }
+  .j.sel { background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+  .j .t { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .j .m { font-size: 11px; color: var(--ink-3); display: flex; gap: 8px; }
+  .st { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+  .st.running { background: var(--a); animation: pulse 1s infinite alternate; }
+  .st.done { background: var(--chg); } .st.failed { background: var(--danger); }
+  @keyframes pulse { from { opacity: .35 } to { opacity: 1 } }
+  /* main */
+  header { border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; align-items: center; gap: 14px; }
+  header .ttl { font-weight: 650; font-size: 14px; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tabs { display: flex; gap: 3px; }
+  #tabs button { border-radius: 999px; padding: 4px 12px; border-color: transparent; color: var(--ink-2); background: transparent; }
+  #tabs button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+  #content { min-height: 0; position: relative; }
+  .pane { position: absolute; inset: 0; overflow: auto; display: none; }
+  .pane.on { display: block; }
+  iframe { width: 100%; height: 100%; border: 0; background: var(--surface); }
+  .empty { height: 100%; display: grid; place-items: center; color: var(--ink-3); text-align: center; padding: 40px; }
+  .empty b { color: var(--ink); display: block; font-size: 16px; margin-bottom: 6px; }
+  .wrap { padding: 18px 22px; max-width: 980px; }
+  ol.findings { padding-left: 20px; margin: 0; }
+  ol.findings li { margin-bottom: 9px; line-height: 1.5; }
+  .sev { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 1px 5px; border-radius: 3px;
+    background: var(--panel); color: var(--ink-2); margin-right: 5px; vertical-align: 1px; }
+  .sev.high { background: var(--ink); color: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; margin-bottom: 18px; }
+  th { text-align: left; color: var(--ink-3); font-weight: 600; font-size: 11px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 4px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  td.n, th.n { text-align: right; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 18px; }
+  .tile { background: var(--panel); border-radius: 8px; padding: 10px 12px; }
+  .tile .v { font-size: 20px; font-weight: 650; }
+  .tile .k { font-size: 11px; color: var(--ink-3); }
+  .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  pre { background: var(--panel); border-radius: 8px; padding: 12px; overflow: auto; font-size: 11.5px; }
+  .links a { display: inline-block; margin: 0 12px 8px 0; color: var(--ink); }
+  .err { color: var(--danger); white-space: pre-wrap; }
+  #toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--surface);
+    padding: 8px 14px; border-radius: 8px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.on { opacity: 1; }
+  .prog { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+  .prog i { display: block; height: 100%; width: 40%; background: var(--a); animation: slide 1.2s infinite linear; }
+  @keyframes slide { from { transform: translateX(-100%) } to { transform: translateX(250%) } }
+</style>
+</head>
+<body>
+<aside>
+  <div class="pad divide">
+    <h1>graphdiff <small id="ver"></small></h1>
+    <div style="color:var(--ink-3);font-size:11px;margin-top:2px" id="wsline"></div>
+  </div>
+
+  <div class="pad divide">
+    <h2>Graphs <button class="small" id="refreshGraphs">refresh</button></h2>
+    <div id="drop">drop graph files here, or click to choose<br><span style="font-size:10.5px">GraphML · node-link JSON · CSV/TSV edge list · Parquet</span></div>
+    <input type="file" id="file" multiple hidden>
+    <div id="graphs"></div>
+    <div style="font-size:11px;color:var(--ink-3);margin-top:6px" id="pickHelp">Mark a graph <b>A</b> and another <b>B</b>, or several as <b>T</b> for a timeline.</div>
+  </div>
+
+  <div class="pad divide">
+    <h2>Options</h2>
+    <label class="f"><span>Node matching</span>
+      <select id="align">
+        <option value="exact">exact labels</option>
+        <option value="normalized">normalized (case, punctuation)</option>
+        <option value="fuzzy">fuzzy (similarity + neighbourhood)</option>
+      </select></label>
+    <label class="f" id="thrRow" hidden><span>Fuzzy match threshold</span><input type="number" id="thr" value="0.6" min="0" max="1" step="0.05"></label>
+    <details>
+      <summary>more</summary>
+      <label class="check"><input type="checkbox" id="undirected"> treat edge lists as undirected</label>
+      <label class="check"><input type="checkbox" id="structural" checked> label-free structural metrics</label>
+      <label class="f"><span>Weight attribute</span><input type="text" id="weight" value="weight"></label>
+      <label class="f"><span>Cluster by node attribute (blank = detect communities)</span><input type="text" id="clusterBy" placeholder="e.g. kind"></label>
+      <label class="f"><span>Max nodes drawn</span><input type="number" id="maxNodes" value="2000" min="50" max="20000" step="100"></label>
+    </details>
+    <button class="primary" id="run" disabled>Compare</button>
+  </div>
+
+  <div class="pad" style="flex:1 1 auto">
+    <h2>History <button class="small" id="refreshJobs">refresh</button></h2>
+    <div id="jobs"></div>
+  </div>
+  <div class="pad" style="border-top:1px solid var(--line)"><button id="theme" class="small">Dark</button></div>
+</aside>
+
+<main>
+  <header>
+    <button id="sidebar" class="small" title="show / hide the sidebar (more room for the viewer)">&#9776;</button>
+    <div class="ttl" id="jobTitle">No comparison selected</div>
+    <a class="open" id="openFull" href="#" target="_blank" hidden>open viewer in its own tab &#8599;</a>
+    <div id="tabs">
+      <button data-p="viewer" aria-pressed="true">Viewer</button>
+      <button data-p="findings">Findings</button>
+      <button data-p="scores">Scores</button>
+      <button data-p="files">Files</button>
+    </div>
+  </header>
+  <div id="content">
+    <div class="pane on" id="p-viewer"><div class="empty"><div><b>Pick two graphs and press Compare.</b>The viewer opens here when the comparison finishes; findings, scores and downloads sit in the other tabs.</div></div></div>
+    <div class="pane" id="p-findings"><div class="wrap" id="findings"></div></div>
+    <div class="pane" id="p-scores"><div class="wrap" id="scores"></div></div>
+    <div class="pane" id="p-files"><div class="wrap" id="files"></div></div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtBytes = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+const toast = (msg, ms = 2600) => { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms); };
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  let body = null;
+  try { body = await r.json(); } catch (e) { /* not json */ }
+  if (!r.ok) throw new Error((body && (body.error || JSON.stringify(body.detail))) || `${r.status} ${r.statusText}`);
+  return body;
+}
+
+// ---- state --------------------------------------------------------------
+let graphs = [], jobs = [], current = null, poll = null;
+const pick = { a: null, b: null, t: [] };
+
+// ---- graphs -------------------------------------------------------------
+async function loadGraphs() {
+  graphs = await api('/api/graphs');
+  const names = new Set(graphs.map(g => g.name));
+  if (pick.a && !names.has(pick.a)) pick.a = null;
+  if (pick.b && !names.has(pick.b)) pick.b = null;
+  pick.t = pick.t.filter(n => names.has(n));
+  renderGraphs();
+}
+function renderGraphs() {
+  const el = $('#graphs');
+  if (!graphs.length) { el.innerHTML = '<div style="color:var(--ink-3);font-size:12px;padding:4px 6px">No graphs in the workspace yet.</div>'; updateRun(); return; }
+  el.innerHTML = graphs.map(g => {
+    const ti = pick.t.indexOf(g.name);
+    return `<div class="g" data-n="${esc(g.name)}">
+      <span class="pick">
+        <b class="${pick.a === g.name ? 'on-a' : ''}" data-k="a" title="use as A (before)">A</b>
+        <b class="${pick.b === g.name ? 'on-b' : ''}" data-k="b" title="use as B (after)">B</b>
+        <b class="${ti >= 0 ? 'on-t' : ''}" data-k="t" title="add to timeline, in click order">${ti >= 0 ? ti + 1 : 'T'}</b>
+      </span>
+      <span class="nm" title="${esc(g.name)} · ${esc(g.format)}">${esc(g.name)}</span>
+      <span class="sz">${fmtBytes(g.bytes)}</span>
+      <button class="small del danger" title="delete file">×</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.pick b').forEach(b => b.addEventListener('click', e => {
+    const name = e.target.closest('.g').dataset.n, k = e.target.dataset.k;
+    if (k === 't') { const i = pick.t.indexOf(name); i >= 0 ? pick.t.splice(i, 1) : pick.t.push(name); }
+    else { pick[k] = pick[k] === name ? null : name; if (k === 'a' && pick.b === name) pick.b = null; if (k === 'b' && pick.a === name) pick.a = null; }
+    renderGraphs();
+  }));
+  el.querySelectorAll('.del').forEach(b => b.addEventListener('click', async e => {
+    const name = e.target.closest('.g').dataset.n;
+    if (!confirm(`Delete ${name} from the workspace?`)) return;
+    try { await api(`/api/graphs/${encodeURIComponent(name)}`, {method: 'DELETE'}); toast(`deleted ${name}`); loadGraphs(); }
+    catch (err) { toast(err.message, 5000); }
+  }));
+  updateRun();
+}
+function updateRun() {
+  const btn = $('#run');
+  if (pick.t.length >= 2) { btn.disabled = false; btn.textContent = `Build timeline (${pick.t.length} snapshots)`; }
+  else if (pick.a && pick.b) { btn.disabled = false; btn.textContent = 'Compare A → B'; }
+  else { btn.disabled = true; btn.textContent = pick.t.length === 1 ? 'Timeline needs 2+ snapshots' : 'Compare'; }
+}
+
+// upload: PUT the raw file body; the name carries the format.
+async function upload(files) {
+  for (const f of files) {
+    toast(`uploading ${f.name}…`, 60000);
+    try {
+      const r = await api(`/api/graphs/${encodeURIComponent(f.name)}`, {method: 'PUT', body: f});
+      toast(`${f.name}: ${r.summary.n_nodes.toLocaleString()} nodes, ${r.summary.n_edges.toLocaleString()} edges`);
+    } catch (err) { toast(`${f.name}: ${err.message}`, 6000); }
+  }
+  loadGraphs();
+}
+const drop = $('#drop');
+drop.addEventListener('click', () => $('#file').click());
+$('#file').addEventListener('change', e => { upload([...e.target.files]); e.target.value = ''; });
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => upload([...e.dataTransfer.files]));
+$('#refreshGraphs').addEventListener('click', loadGraphs);
+
+// ---- options ------------------------------------------------------------
+$('#align').addEventListener('change', () => { $('#thrRow').hidden = $('#align').value !== 'fuzzy'; });
+function options() {
+  return {
+    align: $('#align').value,
+    align_threshold: parseFloat($('#thr').value) || 0.6,
+    undirected: $('#undirected').checked,
+    structural: $('#structural').checked,
+    weight: $('#weight').value.trim() || 'weight',
+    cluster_by: $('#clusterBy').value.trim() || null,
+    max_nodes: parseInt($('#maxNodes').value, 10) || 2000,
+  };
+}
+
+// ---- run ----------------------------------------------------------------
+$('#run').addEventListener('click', async () => {
+  const body = options();
+  let path;
+  if (pick.t.length >= 2) { path = '/api/timeline'; body.graphs = pick.t; }
+  else { path = '/api/compare'; body.a = pick.a; body.b = pick.b; }
+  try {
+    const job = await api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    toast(`started ${job.title}`);
+    await loadJobs();
+    select(job.id);
+  } catch (err) { toast(err.message, 6000); }
+});
+
+// ---- jobs ---------------------------------------------------------------
+async function loadJobs() {
+  jobs = await api('/api/jobs');
+  const el = $('#jobs');
+  if (!jobs.length) { el.innerHTML = '<div style="color:var(--ink-3);font-size:12px;padding:4px 6px">Nothing run yet.</div>'; return; }
+  el.innerHTML = jobs.map(j => `<div class="j ${current && current.id === j.id ? 'sel' : ''}" data-id="${j.id}">
+      <div class="t"><span class="st ${j.status}"></span> ${esc(j.title)}</div>
+      <div class="m"><span>${j.kind}</span><span>${esc(j.params.align)}</span><span>${new Date(j.created_at).toLocaleString()}</span></div>
+    </div>`).join('');
+  el.querySelectorAll('.j').forEach(d => d.addEventListener('click', () => select(d.dataset.id)));
+  // keep polling while anything is in flight
+  const busy = jobs.some(j => j.status === 'queued' || j.status === 'running');
+  clearTimeout(poll);
+  if (busy) poll = setTimeout(async () => { await loadJobs(); if (current) refreshCurrent(); }, 1500);
+}
+$('#refreshJobs').addEventListener('click', loadJobs);
+
+async function select(id) {
+  try { current = await api(`/api/jobs/${id}`); } catch (err) { toast(err.message, 5000); return; }
+  document.querySelectorAll('.j').forEach(d => d.classList.toggle('sel', d.dataset.id === id));
+  renderCurrent();
+}
+async function refreshCurrent() {
+  const was = current.status + '|' + (current.stage || '');
+  try { current = await api(`/api/jobs/${current.id}`); } catch (e) { return; }
+  if (current.status + '|' + (current.stage || '') !== was) renderCurrent();
+}
+
+// ---- rendering the selected job ------------------------------------------
+function renderCurrent() {
+  const j = current;
+  $('#jobTitle').textContent = `${j.title}  ·  ${j.kind}  ·  ${j.status}`;
+  const full = $('#openFull');
+  full.hidden = j.status !== 'done';
+  full.href = `/api/jobs/${j.id}/viewer.html`;
+  const v = $('#p-viewer');
+  if (j.status === 'done') {
+    v.innerHTML = `<iframe src="/api/jobs/${j.id}/viewer.html" title="viewer"></iframe>`;
+  } else if (j.status === 'failed') {
+    v.innerHTML = `<div class="wrap"><b>This comparison failed.</b><pre class="err">${esc(j.error)}\n\n${esc(j.traceback || '')}</pre></div>`;
+  } else {
+    v.innerHTML = `<div class="empty"><div><b>${j.status === 'queued' ? 'Queued' : esc(j.stage || 'Working…')}</b>${esc(j.title)}<div class="prog"><i></i></div></div></div>`;
+  }
+  renderFindings(j); renderScores(j); renderFiles(j);
+}
+
+function renderFindings(j) {
+  const el = $('#findings');
+  if (!j.summary) { el.innerHTML = '<div style="color:var(--ink-3)">Available when the job finishes.</div>'; return; }
+  let html = `<h2>Findings</h2><ol class="findings">` + j.summary.findings.map(f =>
+    `<li><span class="sev ${f.severity}">${f.severity}</span>${esc(f.text)}</li>`).join('') + '</ol>';
+  if (j.kind === 'timeline' && j.summary.step_findings) {
+    html += '<h2 style="margin-top:22px">Per step</h2>';
+    j.summary.churn.forEach((c, k) => {
+      html += `<div style="margin:10px 0 4px;font-weight:600">${esc(c.from)} → ${esc(c.to)} <span style="color:var(--ink-3);font-weight:400">· similarity ${c.similarity == null ? '—' : c.similarity.toFixed(3)}</span></div><ol class="findings">` +
+        j.summary.step_findings[k].map(f => `<li><span class="sev ${f.severity}">${f.severity}</span>${esc(f.text)}</li>`).join('') + '</ol>';
+    });
+  }
+  el.innerHTML = html;
+}
+
+function renderScores(j) {
+  const el = $('#scores');
+  if (!j.summary) { el.innerHTML = '<div style="color:var(--ink-3)">Available when the job finishes.</div>'; return; }
+  const s = j.summary;
+  if (j.kind === 'timeline') {
+    el.innerHTML = '<h2>Churn per step</h2><table><thead><tr><th>Step</th><th class="n">Similarity</th><th class="n">Nodes −/+</th><th class="n">Edges −/+</th><th class="n">Reweighted</th></tr></thead><tbody>' +
+      s.churn.map(c => `<tr><td>${esc(c.from)} → ${esc(c.to)}</td><td class="n">${c.similarity == null ? '—' : c.similarity.toFixed(3)}</td><td class="n">${c.nodes_removed} / ${c.nodes_added}</td><td class="n">${c.edges_removed} / ${c.edges_added}</td><td class="n">${c.edges_reweighted}</td></tr>`).join('') + '</tbody></table>';
+    return;
+  }
+  const nc = s.node_status_counts, ec = s.edge_status_counts;
+  const tile = (v, k, color) => `<div class="tile"><div class="v">${color ? `<i class="sw" style="background:${color}"></i>` : ''}${v}</div><div class="k">${k}</div></div>`;
+  const sim = s.scalar_scores.ged_similarity.raw;
+  let html = '<div class="tiles">' +
+    tile(sim == null ? '—' : (sim * 100).toFixed(0) + '%', 'similar by edit distance') +
+    tile(nc.SHARED.toLocaleString(), 'nodes in both', 'var(--shared)') +
+    tile(nc.A_ONLY.toLocaleString(), `nodes only in ${esc(s.graph_a)}`, 'var(--a)') +
+    tile(nc.B_ONLY.toLocaleString(), `nodes only in ${esc(s.graph_b)}`, 'var(--b)') +
+    tile(ec.CHANGED.toLocaleString(), 'edges reweighted', 'var(--chg)') +
+    (s.alignment ? tile((s.alignment.normalized + s.alignment.fuzzy).toLocaleString(), 'nodes matched despite differing labels') : '') +
+    '</div>';
+  html += '<h2>Most significant nodes</h2><table><thead><tr><th>Node</th><th>Status</th><th class="n">Significance</th><th class="n">Surprise</th><th class="n">Removed</th><th class="n">Added</th><th class="n">Reweighted</th><th class="n">Degree A → B</th></tr></thead><tbody>' +
+    s.top_changed.map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.status)}</td><td class="n">${(+r.significance).toFixed(1)}</td><td class="n">${(+r.surprise).toFixed(1)}</td><td class="n">${r.n_removed}</td><td class="n">${r.n_added}</td><td class="n">${r.n_changed}</td><td class="n">${r.degree_a} → ${r.degree_b}</td></tr>`).join('') + '</tbody></table>';
+  html += '<h2>All scores</h2><table><thead><tr><th>Metric</th><th class="n">Raw</th><th class="n">Shared subgraph</th></tr></thead><tbody>' +
+    Object.entries(s.scalar_scores).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n">${fmt(v.raw)}</td><td class="n">${fmt(v.shared)}</td></tr>`).join('') + '</tbody></table>';
+  el.innerHTML = html;
+}
+const fmt = v => v == null ? '—' : Math.abs(v) >= 100 ? (+v).toFixed(0) : (+v).toFixed(4);
+
+function renderFiles(j) {
+  const el = $('#files');
+  const names = {'viewer.html': 'Viewer page (self-contained; open anywhere, no network needed)', 'report.json': 'Full report (JSON)', 'summary.md': 'Markdown summary', 'figure.png': 'Static dashboard figure (PNG)'};
+  let html = '<h2>Downloads</h2><div class="links">' + (j.artifacts || []).map(a =>
+    `<a href="/api/jobs/${j.id}/${a}" download="${esc(j.title.replace(/[^\w.-]+/g, '_'))}-${a}">${esc(names[a] || a)}</a>`).join('') + '</div>';
+  html += '<h2 style="margin-top:20px">Parameters</h2><pre>' + esc(JSON.stringify(j.params, null, 2)) + '</pre>';
+  html += `<h2>Run</h2><pre>created  ${esc(j.created_at)}\nstarted  ${esc(j.started_at || '—')}\nfinished ${esc(j.finished_at || '—')}\nfolder   .graphdiff/jobs/${j.id}/</pre>`;
+  html += `<button class="danger" id="delJob">Forget this job</button>`;
+  el.innerHTML = html;
+  $('#delJob').addEventListener('click', async () => {
+    if (!confirm('Delete this job and its files?')) return;
+    await api(`/api/jobs/${j.id}`, {method: 'DELETE'});
+    current = null; $('#jobTitle').textContent = 'No comparison selected';
+    $('#p-viewer').innerHTML = '<div class="empty"><div><b>Pick two graphs and press Compare.</b></div></div>';
+    ['findings', 'scores', 'files'].forEach(p => $('#' + p).innerHTML = '');
+    loadJobs();
+  });
+}
+
+// ---- tabs + theme -------------------------------------------------------
+document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'p-' + b.dataset.p));
+}));
+let mode = 'light';
+function setTheme(next) {
+  mode = next; document.documentElement.setAttribute('data-theme', next);
+  $('#theme').textContent = next === 'light' ? 'Dark' : 'Light';
+  const fr = document.querySelector('#p-viewer iframe');
+  if (fr && fr.contentWindow) fr.contentWindow.postMessage({theme: next}, '*');
+  try { localStorage.setItem('graphdiff-theme', next); } catch (e) { /* ignore */ }
+}
+$('#theme').addEventListener('click', () => setTheme(mode === 'light' ? 'dark' : 'light'));
+$('#sidebar').addEventListener('click', () => document.body.classList.toggle('collapsed'));
+
+// ---- boot ---------------------------------------------------------------
+(async () => {
+  let saved = null; try { saved = localStorage.getItem('graphdiff-theme'); } catch (e) { /* ignore */ }
+  setTheme(saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  try {
+    const m = await api('/api/meta');
+    $('#ver').textContent = 'v' + m.version;
+    $('#wsline').textContent = m.workspace; $('#wsline').title = 'workspace folder: graphs live here, results go under .graphdiff/jobs/';
+  } catch (e) { toast('cannot reach the server', 6000); }
+  await loadGraphs();
+  await loadJobs();
+  if (jobs.length && jobs[0].status === 'done') select(jobs[0].id);
+})();
+</script>
+</body>
+</html>

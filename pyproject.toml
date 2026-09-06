@@ -32,7 +32,7 @@ graphdiff = "graphdiff.cli:main"
 include = ["graphdiff*"]
 
 [tool.setuptools.package-data]
-graphdiff = ["viewer/static/**/*", "data/*"]
+graphdiff = ["viewer/static/**/*", "server/static/*", "data/*"]
 
 [tool.ruff]
 line-length = 100

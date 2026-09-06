@@ -293,6 +293,7 @@ graphdiff render A.graphml B.graphml --out diff.html [--cluster-by kind]
 graphdiff timeline t0.graphml t1.graphml t2.graphml --html timeline.html --markdown tl.md
 graphdiff plot A.graphml B.graphml --out diff.png --kind dashboard   # static PNG/SVG/PDF
 graphdiff serve diff.html --port 8080             # localhost only; nothing outbound
+graphdiff app --workspace ./graphs                # the local web interface (see below)
 
 # regression gate: exit 1 when a rule fails
 graphdiff check A.graphml B.graphml -r "jaccard_typed_edges>=0.95" -r "nodes.A_ONLY<=0"
@@ -427,11 +428,29 @@ from graphdiff import plot
 plot.save(plot.plot_dashboard(report), "diff.png")
 ```
 
-### Interactive server viewer
+### The web app
 
-*Not yet built.* The Vite + React + Cosmograph + FastAPI viewer from the spec
-remains an option for live exploration; the static export above covers reviewing
-and sharing a single comparison, which is the common case.
+```bash
+pip install -e ".[viewer]"        # fastapi + uvicorn
+graphdiff app --workspace ./graphs      # opens http://127.0.0.1:8765/
+```
+
+For the person who has two graph files and a question rather than a Python
+session: drop graphs into the page (or point `--workspace` at a folder of
+them), mark one **A** and one **B** — or several **T** for a timeline — pick the
+node-matching mode and press Compare. Jobs run in the background with a stage
+indicator; each finished job shows the full viewer, the findings, the score
+tables and downloads (viewer page, JSON report, markdown, dashboard PNG), and
+the history survives restarts because every job is a folder of plain files
+under `.graphdiff/jobs/`.
+
+It is one FastAPI process serving one inlined HTML page and a small JSON API
+(`/api/graphs`, `/api/compare`, `/api/timeline`, `/api/jobs/…`), bound to
+`127.0.0.1`, loading nothing from anywhere. No build step, no Node, no CDN —
+the same offline test that guards the viewer guards this page. The
+Vite + React + Cosmograph front end from the original spec was deliberately
+not built: the canvas viewer already handles the sizes that fit in a page, and
+a bundler-free page is far easier to audit for an air-gapped deployment.
 
 ## Development
 

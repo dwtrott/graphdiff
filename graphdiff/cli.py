@@ -377,6 +377,39 @@ def render(
     typer.echo(f"viewer → {out}", err=True)
 
 
+@app.command(name="app")
+def app_command(
+    workspace: Annotated[
+        Path,
+        typer.Option("--workspace", "-w", help="Folder of graphs; results go under .graphdiff/."),
+    ] = Path("."),
+    port: Annotated[int, typer.Option(help="Port on 127.0.0.1.")] = 8765,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
+    workers: Annotated[int, typer.Option(help="Comparisons that may run at once.")] = 2,
+) -> None:
+    """Start the local web app: upload or pick graphs, compare, browse the results.
+
+    Bound to 127.0.0.1, serves one inlined page and a JSON API, makes no
+    outbound requests. Needs the [viewer] extra (fastapi, uvicorn).
+    """
+    try:
+        import uvicorn
+
+        from .server import create_app
+    except ImportError as exc:  # pragma: no cover - depends on optional extra
+        typer.echo(f"{exc}\ninstall with: pip install 'graphdiff[viewer]'", err=True)
+        raise typer.Exit(code=2) from None
+
+    application = create_app(workspace, workers=workers)
+    url = f"http://127.0.0.1:{port}/"
+    typer.echo(
+        f"graphdiff app on {url}  (workspace {workspace.resolve()}; Ctrl+C to stop)", err=True
+    )
+    if open_browser:
+        webbrowser.open(url)
+    uvicorn.run(application, host="127.0.0.1", port=port, log_level="warning")
+
+
 @app.command()
 def serve(
     html: Annotated[Path, typer.Argument(exists=True, help="A rendered diff.html.")],
