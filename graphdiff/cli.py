@@ -377,6 +377,29 @@ def render(
     typer.echo(f"viewer → {out}", err=True)
 
 
+@app.command()
+def demo(
+    directory: Annotated[
+        Path, typer.Argument(help="Folder to write the example datasets into.")
+    ] = Path("graphdiff-demo"),
+    force: Annotated[bool, typer.Option(help="Overwrite files that already exist.")] = False,
+) -> None:
+    """Write the built-in example datasets to a folder, ready for `graphdiff app`.
+
+    Small pair (52 nodes), large pair (~3,000 nodes, change concentrated in 3
+    of 28 communities), the large pair with 10% of labels renamed (for fuzzy
+    matching), and a six-snapshot series with drift, one event, a hotspot and
+    flickering nodes. All generated in-process; nothing is downloaded.
+    """
+    from .data.demo import write_demo_datasets
+
+    written = write_demo_datasets(directory, force=force)
+    for path in written:
+        typer.echo(f"  {path.name}", err=True)
+    typer.echo(f"{len(written)} files in {directory.resolve()}", err=True)
+    typer.echo(f"next:  graphdiff app --workspace {directory}", err=True)
+
+
 @app.command(name="app")
 def app_command(
     workspace: Annotated[
@@ -386,11 +409,18 @@ def app_command(
     port: Annotated[int, typer.Option(help="Port on 127.0.0.1.")] = 8765,
     open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True,
     workers: Annotated[int, typer.Option(help="Comparisons that may run at once.")] = 2,
+    use_demo: Annotated[
+        bool,
+        typer.Option(
+            "--demo", help="Use ./graphdiff-demo, creating the example datasets if needed."
+        ),
+    ] = False,
 ) -> None:
     """Start the local web app: upload or pick graphs, compare, browse the results.
 
     Bound to 127.0.0.1, serves one inlined page and a JSON API, makes no
     outbound requests. Needs the [viewer] extra (fastapi, uvicorn).
+    `graphdiff app --demo` is the zero-setup start.
     """
     try:
         import uvicorn
@@ -399,6 +429,14 @@ def app_command(
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         typer.echo(f"{exc}\ninstall with: pip install 'graphdiff[viewer]'", err=True)
         raise typer.Exit(code=2) from None
+
+    if use_demo:
+        from .data.demo import write_demo_datasets
+
+        workspace = Path("graphdiff-demo")
+        written = write_demo_datasets(workspace, force=False)
+        if written:
+            typer.echo(f"wrote {len(written)} example datasets to {workspace.resolve()}", err=True)
 
     application = create_app(workspace, workers=workers)
     url = f"http://127.0.0.1:{port}/"

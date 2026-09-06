@@ -26,6 +26,9 @@ punctuation, renames, typos), [fuzzy alignment](#fuzzy-alignment) recovers the
 correspondences first, with a confidence on each one, and the same union diff
 graph is built on top.
 
+**New here? Read [QUICKSTART.md](QUICKSTART.md)** — install, `graphdiff app --demo`, and
+what to click.
+
 ## Install
 
 ```bash

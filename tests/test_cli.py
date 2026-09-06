@@ -182,3 +182,23 @@ class TestPackagingScripts:
         text = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
         assert "--no-index" in text and "--find-links wheelhouse" in text
         assert "pip install graphdiff" not in text  # never from the index
+
+
+class TestDemo:
+    def test_demo_writes_datasets_once(self, tmp_path: Path) -> None:
+        target = tmp_path / "demo"
+        r = runner.invoke(app, ["demo", str(target)])
+        assert r.exit_code == 0, r.output
+        names = sorted(p.name for p in target.iterdir())
+        assert {
+            "baseline.graphml",
+            "rebuilt.graphml",
+            "rebuilt-renamed.graphml",
+            "README.md",
+        } <= set(names)
+        assert sum(n.startswith("t") and n.endswith(".graphml") for n in names) == 6
+        stamp = (target / "baseline.graphml").stat().st_mtime_ns
+        r = runner.invoke(app, ["demo", str(target)])
+        assert r.exit_code == 0 and "0 files" in r.output
+        assert (target / "baseline.graphml").stat().st_mtime_ns == stamp  # untouched
+        assert gd.read_graph(target / "baseline.graphml").n_nodes > 3000
